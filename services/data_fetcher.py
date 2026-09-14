@@ -2,36 +2,58 @@
 Live Social Media Web Scraper & Intelligence Service.
 Fetches real, live profile metrics directly from Instagram, Threads, and TikTok
 without requiring third-party API keys or login tokens.
-Computes deep, tier-calibrated engagement and benchmarking analytics.
+Computes engagement analytics strictly from scraped data — no synthetic/fake data.
 """
 
 from __future__ import annotations
 import abc
+import concurrent.futures
 import datetime
 import hashlib
 import html
-import random
+import logging
+import os
 import re
-from typing import Any, Dict, List, Optional
+import shutil
+import subprocess
+import tempfile
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+import urllib.parse
+
 from utils.helpers import clean_handle
 
-CURATED_POST_IMAGES = [
-    "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1531482615713-2afd69097998?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1524178232363-1fb2b075b655?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=600&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1509062522246-3755977927d7?w=600&auto=format&fit=crop&q=80",
-]
+logger = logging.getLogger(__name__)
+
+
+def _generate_dynamic_account_card(handle: str, avatar_url: str = "") -> str:
+    """Generates a dynamic SVG card tailored to the handle as a placeholder image."""
+    if avatar_url and ("cdninstagram.com" in avatar_url or "scontent" in avatar_url):
+        return avatar_url
+    # Sanitize handle for SVG
+    safe_handle = re.sub(r"[^a-zA-Z0-9._]", "", handle)[:30]
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+      <defs>
+        <linearGradient id="grad_{safe_handle}" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
+          <stop offset="50%" style="stop-color:#7C3AED;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#EC4899;stop-opacity:1" />
+        </linearGradient>
+      </defs>
+      <rect width="600" height="400" fill="url(#grad_{safe_handle})"/>
+      <circle cx="300" cy="170" r="48" fill="#FFFFFF" opacity="0.18"/>
+      <text x="300" y="185" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="38" font-weight="bold" fill="#FFFFFF" text-anchor="middle">📷</text>
+      <text x="300" y="260" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="24" font-weight="700" fill="#FFFFFF" text-anchor="middle">@{safe_handle}</text>
+      <text x="300" y="295" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="14" font-weight="500" fill="#E0E7FF" text-anchor="middle">Social Media Profile</text>
+    </svg>"""
+    encoded = urllib.parse.quote(svg)
+    return f"data:image/svg+xml;utf8,{encoded}"
 
 
 class BaseDataService(abc.ABC):
-    """Abstract base class for social media data fetching."""
+    """Abstract Base Class for Data Fetching and Benchmarking Services."""
 
     @abc.abstractmethod
     def fetch_account_data(
@@ -53,6 +75,11 @@ class BaseDataService(abc.ABC):
         end_date: datetime.date,
     ) -> Dict[str, Any]:
         """Fetch benchmark dataset for main account and all competitor accounts."""
+        if isinstance(start_date, datetime.datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime.datetime):
+            end_date = end_date.date()
+
         cleaned_main = clean_handle(main_account)
         cleaned_competitors = [clean_handle(c) for c in competitors if clean_handle(c)]
 
@@ -64,16 +91,79 @@ class BaseDataService(abc.ABC):
                 seen.add(h.lower())
 
         accounts_data = []
-        for handle in all_handles:
-            is_main = (handle.lower() == cleaned_main.lower())
-            acc = self.fetch_account_data(
-                platform=platform,
-                raw_account=handle,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            acc["is_main"] = is_main
-            accounts_data.append(acc)
+        # Use concurrent threading for ALL platforms when multiple accounts
+        if len(all_handles) > 1:
+            acc_map = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(all_handles))) as executor:
+                future_to_handle = {
+                    executor.submit(
+                        self.fetch_account_data,
+                        platform=platform,
+                        raw_account=handle,
+                        start_date=start_date,
+                        end_date=end_date,
+                    ): handle
+                    for handle in all_handles
+                }
+                for future in concurrent.futures.as_completed(future_to_handle):
+                    h = future_to_handle[future]
+                    try:
+                        acc_map[h] = future.result()
+                    except Exception as e:
+                        logger.error("Failed to fetch data for @%s: %s", h, e, exc_info=True)
+                        acc_map[h] = {
+                            "handle": h,
+                            "display_name": h,
+                            "platform": platform,
+                            "avatar_url": _generate_dynamic_account_card(h),
+                            "bio": f"Gagal mengambil data @{h}: {str(e)[:100]}",
+                            "followers": 0,
+                            "start_followers": 0,
+                            "growth_rate_pct": 0.0,
+                            "following": 0,
+                            "total_posts_lifetime": 0,
+                            "is_verified": False,
+                            "historical_followers": [],
+                            "posts": [],
+                            "not_found": True,
+                            "data_source": "Error",
+                        }
+            for handle in all_handles:
+                if handle in acc_map:
+                    acc = acc_map[handle]
+                    acc["is_main"] = (handle.lower() == cleaned_main.lower())
+                    accounts_data.append(acc)
+        else:
+            for handle in all_handles:
+                is_main = (handle.lower() == cleaned_main.lower())
+                try:
+                    acc = self.fetch_account_data(
+                        platform=platform,
+                        raw_account=handle,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                except Exception as e:
+                    logger.error("Failed to fetch data for @%s: %s", handle, e, exc_info=True)
+                    acc = {
+                        "handle": handle,
+                        "display_name": handle,
+                        "platform": platform,
+                        "avatar_url": _generate_dynamic_account_card(handle),
+                        "bio": f"Gagal mengambil data @{handle}: {str(e)[:100]}",
+                        "followers": 0,
+                        "start_followers": 0,
+                        "growth_rate_pct": 0.0,
+                        "following": 0,
+                        "total_posts_lifetime": 0,
+                        "is_verified": False,
+                        "historical_followers": [],
+                        "posts": [],
+                        "not_found": True,
+                        "data_source": "Error",
+                    }
+                acc["is_main"] = is_main
+                accounts_data.append(acc)
 
         days_count = max(1, (end_date - start_date).days + 1)
         return {
@@ -93,20 +183,40 @@ class LiveWebScraperService(BaseDataService):
     """
     Live Social Media Scraper.
     Extracts real followers, following, posts count, bio, title, and avatars
-    directly from public endpoints, then builds calibrated benchmark metrics.
+    directly from public endpoints, then computes benchmark metrics
+    strictly from scraped data.
     """
+
+    # Realistic browser User-Agent for standard page requests
+    DEFAULT_UA = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    # Social crawler User-Agent that receives full OpenGraph metadata without JS/login redirection
+    CRAWLER_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+            "User-Agent": self.DEFAULT_UA,
             "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
 
     def _parse_compact_number(self, s: str) -> int:
-        """Parse numbers with k/m/b suffixes like 5,598, 95.7m, 12.4k."""
-        clean = s.strip().replace(",", "").replace(" ", "").lower()
+        """Parse numbers with k/m/b/rb/jt suffixes like 5,598, 95.7m, 12,4k, 2,5 jt."""
+        if not s:
+            return 0
+        clean = s.strip().replace(" ", "").lower()
+        clean = clean.replace("rb", "k").replace("jt", "m").replace("milyar", "b")
         try:
+            # If comma is followed by digits and a suffix (e.g. 5,5m or 12,4k), it's a decimal comma
+            if re.search(r",\d+[kmb]", clean):
+                clean = clean.replace(",", ".")
+            else:
+                # Thousands separator
+                clean = clean.replace(",", "")
+
             if "k" in clean:
                 return int(float(clean.replace("k", "")) * 1_000)
             if "m" in clean:
@@ -118,10 +228,10 @@ class LiveWebScraperService(BaseDataService):
             return 0
 
     def _scrape_instagram_profile(self, handle: str) -> Dict[str, Any]:
-        """Scrapes live Instagram profile metadata."""
+        """Scrapes live Instagram profile metadata via OG tags."""
         url = f"https://www.instagram.com/{handle}/"
         try:
-            r = self.session.get(url, timeout=10)
+            r = self.session.get(url, headers={"User-Agent": self.CRAWLER_UA}, timeout=10)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, "html.parser")
                 og_desc = soup.find("meta", {"property": "og:description"})
@@ -166,16 +276,312 @@ class LiveWebScraperService(BaseDataService):
                         "bio": bio,
                         "avatar_url": avatar,
                     }
-        except Exception:
-            pass
+            elif r.status_code == 404:
+                logger.info("Instagram profile @%s returned 404", handle)
+            else:
+                logger.warning("Instagram profile @%s returned HTTP %d", handle, r.status_code)
+        except requests.RequestException as e:
+            logger.error("Network error scraping Instagram @%s: %s", handle, e)
+        except Exception as e:
+            logger.error("Unexpected error scraping Instagram @%s: %s", handle, e, exc_info=True)
 
         return {"success": False, "handle": handle}
+
+    def _get_chrome_path(self) -> Optional[str]:
+        """Locates the Google Chrome or Chromium executable on the system."""
+        candidate_paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ]
+        for p in candidate_paths:
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                return p
+        for bin_name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]:
+            found = shutil.which(bin_name)
+            if found:
+                return found
+        return None
+
+    def _scrape_instagram_with_chrome(self, handle: str) -> Optional[Dict[str, Any]]:
+        """
+        Executes headless Chrome with --dump-dom to retrieve the fully-rendered client-side DOM.
+        This provides real CDN image URLs, genuine post links (/p/{shortcode}/), real dates, and real captions.
+        """
+        chrome_path = self._get_chrome_path()
+        if not chrome_path:
+            return None
+
+        # Validate handle to prevent shell injection — only allow safe characters
+        if not re.match(r"^[a-zA-Z0-9._]+$", handle):
+            logger.warning("Unsafe handle rejected for Chrome scraping: %s", handle)
+            return None
+
+        url = f"https://www.instagram.com/{handle}/"
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tf:
+                tmp_path = tf.name
+
+            # Use list args (no shell) to prevent command injection
+            cmd = [
+                chrome_path,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--dump-dom",
+                url,
+            ]
+            with open(tmp_path, "w", encoding="utf-8") as outfile:
+                res = subprocess.run(
+                    cmd,
+                    stdout=outfile,
+                    stderr=subprocess.PIPE,
+                    timeout=8,
+                )
+            if res.returncode != 0:
+                stderr_text = ""
+                if res.stderr:
+                    stderr_text = res.stderr.decode("utf-8", errors="replace")[:200]
+                logger.warning("Chrome dump-dom failed for @%s (exit %d): %s", handle, res.returncode, stderr_text)
+                return None
+
+            if not os.path.exists(tmp_path):
+                return None
+
+            with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+                html_content = f.read()
+
+            if len(html_content) < 5000:
+                return None
+
+            soup = BeautifulSoup(html_content, "html.parser")
+
+            # 1. Profile metadata
+            og_desc = soup.find("meta", {"property": "og:description"})
+            og_title = soup.find("meta", {"property": "og:title"})
+            og_image = soup.find("meta", {"property": "og:image"})
+            meta_desc = soup.find("meta", {"name": "description"})
+
+            desc = html.unescape(og_desc.get("content", "")) if og_desc else ""
+            title = html.unescape(og_title.get("content", "")) if og_title else ""
+            avatar = html.unescape(og_image.get("content", "")) if og_image else ""
+
+            m_stats = re.search(
+                r"([\d,\.kmKM]+)\s+Followers?,\s+([\d,\.kmKM]+)\s+Following,\s+([\d,\.kmKM]+)\s+Posts",
+                desc,
+                re.I,
+            )
+            followers = self._parse_compact_number(m_stats.group(1)) if m_stats else 0
+            following = self._parse_compact_number(m_stats.group(2)) if m_stats else 0
+            total_posts = self._parse_compact_number(m_stats.group(3)) if m_stats else 0
+
+            display_name = handle
+            if og_title:
+                m_name = re.match(r"^(.*?)\s*\(\s*[@&#064;]+", title)
+                if m_name:
+                    display_name = m_name.group(1).strip()
+
+            bio = ""
+            if meta_desc and meta_desc.get("content"):
+                c = html.unescape(meta_desc.get("content", ""))
+                if "on Instagram:" in c:
+                    bio = c.split("on Instagram:", 1)[1].strip().strip('"')
+
+            # 2. Extract Real Posts with Authentic CDN Thumbnails and Shortcodes
+            links = soup.find_all("a", href=True)
+            seen_codes = set()
+            raw_posts = []
+            for a in links:
+                href = a.get("href", "")
+                m = re.search(r"/(?:p|reel)/([A-Za-z0-9_-]+)", href)
+                if not m:
+                    continue
+                code = m.group(1)
+                if code in seen_codes:
+                    continue
+
+                # If the link has an account prefix, verify it belongs to handle
+                m_owner = re.search(r"^/([^/]+)/(?:p|reel)/", href)
+                if m_owner:
+                    owner = m_owner.group(1).lower()
+                    if owner != handle.lower() and owner not in ["p", "reel"]:
+                        continue
+
+                seen_codes.add(code)
+
+                img = a.find("img")
+                img_src = img.get("src", "") if img else ""
+                img_alt = img.get("alt", "") if img else ""
+
+                if not img_src:
+                    continue
+
+                raw_posts.append({
+                    "shortcode": code,
+                    "post_url": f"https://www.instagram.com/p/{code}/",
+                    "thumbnail_url": img_src,
+                    "alt": img_alt,
+                })
+
+            return {
+                "success": True,
+                "handle": handle,
+                "display_name": display_name,
+                "followers": followers,
+                "following": following,
+                "total_posts": total_posts,
+                "bio": bio,
+                "avatar_url": avatar,
+                "scraped_posts": raw_posts,
+            }
+        except subprocess.TimeoutExpired:
+            logger.warning("Chrome timed out for @%s", handle)
+            return None
+        except Exception as e:
+            logger.error("Chrome scraping error for @%s: %s", handle, e, exc_info=True)
+            return None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    def _parse_instagram_post_metadata(
+        self,
+        alt_text: str,
+        shortcode: str,
+        handle: str,
+    ) -> Tuple[Optional[datetime.datetime], str, str, str]:
+        """
+        Extracts date, formatted date string, content format type, and caption
+        from the post's rendered alt text.
+        """
+        # Extract date from alt string: e.g. "on September 11, 2026"
+        m_date = re.search(r"on\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", alt_text)
+        post_dt = None
+        date_str = ""
+        if m_date:
+            try:
+                post_dt = datetime.datetime.strptime(m_date.group(1), "%B %d, %Y")
+                date_str = post_dt.strftime("%d %b %Y")
+            except Exception:
+                pass
+
+        # Format type
+        is_video = alt_text.lower().startswith("video")
+        is_carousel = "carousel" in alt_text.lower()
+        content_type = "Reels/Video" if is_video else ("Carousel" if is_carousel else "Single Image")
+
+        # Extract caption text from alt
+        caption = ""
+        m_text = re.search(r"text that says [\x27\u2018\u201c\"](.*?)[\x27\u2019\u201d\"]\s*\.?", alt_text, re.DOTALL)
+        if m_text and len(m_text.group(1).strip()) > 3:
+            caption = m_text.group(1).strip()
+        else:
+            if m_date:
+                after = alt_text[m_date.end():].strip(" .")
+                after = re.sub(
+                    r"^(May be an image of|May be a graphic of|May be a photo of|May be a meme of)\s*",
+                    "",
+                    after,
+                    flags=re.I,
+                ).strip()
+                if after and len(after) > 5:
+                    caption = after.capitalize()
+
+        return post_dt, date_str, content_type, caption
+
+    def _fetch_instagram_post_metadata(self, shortcode: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches authentic, ground-truth post metrics (exact likes, comments, caption, date)
+        directly from Instagram's canonical crawler metadata endpoint without login or API keys.
+        """
+        url = f"https://www.instagram.com/p/{shortcode}/"
+        headers = {
+            "User-Agent": self.DEFAULT_UA,
+            "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+        }
+        try:
+            r = self.session.get(url, headers=headers, timeout=8)
+            if r.status_code != 200:
+                return None
+            soup = BeautifulSoup(r.text, "html.parser")
+            og_desc = soup.find("meta", {"property": "og:description"})
+            if not og_desc or not og_desc.get("content"):
+                return None
+            desc = html.unescape(og_desc.get("content", "")).strip()
+
+            likes = 0
+            comments = 0
+            date_str = ""
+            post_dt = None
+            caption = ""
+
+            # Check for likes count: e.g. "895 likes"
+            m_likes = re.search(r"([\d,\.kmKM]+)\s+likes?", desc, re.I)
+            if m_likes:
+                likes = self._parse_compact_number(m_likes.group(1))
+
+            # Check for comments count: e.g. "10 comments"
+            m_comm = re.search(r"([\d,\.kmKM]+)\s+comments?", desc, re.I)
+            if m_comm:
+                comments = self._parse_compact_number(m_comm.group(1))
+
+            # Extract date: e.g. "on September 8, 2026"
+            m_date = re.search(r"on\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", desc, re.I)
+            if m_date:
+                raw_date = m_date.group(1).strip()
+                try:
+                    post_dt = datetime.datetime.strptime(raw_date, "%B %d, %Y")
+                    date_str = post_dt.strftime("%d %b %Y")
+                except Exception:
+                    date_str = raw_date
+
+            # Extract caption: text following the colon after date
+            if m_date:
+                colon_idx = desc.find(":", m_date.end())
+                if colon_idx != -1:
+                    raw_caption = desc[colon_idx + 1:].strip()
+                    if (raw_caption.startswith('"') and raw_caption.endswith('"')) or (raw_caption.startswith("'") and raw_caption.endswith("'")):
+                        raw_caption = raw_caption[1:-1].strip()
+                    elif raw_caption.startswith('"'):
+                        raw_caption = raw_caption.lstrip('"').rstrip('" .')
+                    caption = raw_caption
+
+            # Fallback to og:title if caption is still empty
+            if not caption:
+                og_title = soup.find("meta", {"property": "og:title"})
+                if og_title and og_title.get("content"):
+                    t_content = html.unescape(og_title.get("content", ""))
+                    if ":" in t_content:
+                        caption = t_content.split(":", 1)[1].strip(' ".\r\n')
+
+            return {
+                "likes": likes,
+                "comments": comments,
+                "date_str": date_str,
+                "post_dt": post_dt,
+                "caption": caption,
+            }
+        except requests.RequestException as e:
+            logger.debug("Network error fetching post %s: %s", shortcode, e)
+            return None
+        except Exception as e:
+            logger.debug("Error fetching post %s: %s", shortcode, e)
+            return None
 
     def _scrape_threads_profile(self, handle: str) -> Dict[str, Any]:
         """Scrapes live Threads profile metadata."""
         url = f"https://www.threads.net/@{handle}"
         try:
-            r = self.session.get(url, timeout=10)
+            r = self.session.get(url, headers={"User-Agent": self.CRAWLER_UA}, timeout=10)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, "html.parser")
                 og_desc = soup.find("meta", {"property": "og:description"})
@@ -190,7 +596,7 @@ class LiveWebScraperService(BaseDataService):
                 threads_count = 0
                 bio = ""
                 if desc:
-                    parts = [p.strip() for p in desc.split("•")]
+                    parts = [p.strip() for p in desc.split("\u2022")]
                     for p in parts:
                         if "follower" in p.lower():
                             m = re.search(r"([\d,\.kmKM]+)", p)
@@ -220,8 +626,10 @@ class LiveWebScraperService(BaseDataService):
                         "bio": bio,
                         "avatar_url": avatar,
                     }
-        except Exception:
-            pass
+        except requests.RequestException as e:
+            logger.error("Network error scraping Threads @%s: %s", handle, e)
+        except Exception as e:
+            logger.error("Error scraping Threads @%s: %s", handle, e, exc_info=True)
 
         return {"success": False, "handle": handle}
 
@@ -229,7 +637,7 @@ class LiveWebScraperService(BaseDataService):
         """Scrapes live TikTok profile metadata."""
         url = f"https://www.tiktok.com/@{handle}"
         try:
-            r = self.session.get(url, timeout=10)
+            r = self.session.get(url, headers={"User-Agent": self.CRAWLER_UA}, timeout=10)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, "html.parser")
                 og_desc = soup.find("meta", {"property": "og:description"})
@@ -244,6 +652,10 @@ class LiveWebScraperService(BaseDataService):
                 followers = self._parse_compact_number(m.group(1)) if m else 0
                 following = self._parse_compact_number(m.group(2)) if m else 0
 
+                # Try to extract video count from description
+                m_videos = re.search(r"([\d,\.kmKM]+)\s+(?:Videos?|video)", desc, re.I)
+                total_posts = self._parse_compact_number(m_videos.group(1)) if m_videos else 0
+
                 display_name = handle
                 if title:
                     display_name = title.replace("on TikTok", "").strip()
@@ -255,44 +667,16 @@ class LiveWebScraperService(BaseDataService):
                         "display_name": display_name,
                         "followers": followers,
                         "following": following,
-                        "total_posts": max(10, int(followers * 0.05)),
+                        "total_posts": total_posts,
                         "bio": desc,
                         "avatar_url": avatar,
                     }
-        except Exception:
-            pass
+        except requests.RequestException as e:
+            logger.error("Network error scraping TikTok @%s: %s", handle, e)
+        except Exception as e:
+            logger.error("Error scraping TikTok @%s: %s", handle, e, exc_info=True)
 
         return {"success": False, "handle": handle}
-
-    def _extract_bio_keywords_and_hashtags(self, bio: str, display_name: str, handle: str) -> tuple[List[str], List[str]]:
-        """Extract domain-grounded keywords and hashtags from the account's real bio."""
-        text = f"{display_name} {bio} {handle}"
-        
-        # Extract explicit hashtags
-        hashtags = re.findall(r"#\w+", text)
-        
-        # Clean words
-        words = re.findall(r"[A-Za-z0-9_]{3,}", text)
-        stopwords = {
-            "the", "and", "for", "with", "this", "that", "from", "dan", "untuk", "yang", "pada", 
-            "official", "instagram", "photos", "videos", "see", "more", "profile", "account",
-            "kuliah", "info", "info_unpak", "com", "net", "org", "link", "bio"
-        }
-        keywords = []
-        for w in words:
-            wl = w.lower()
-            if wl not in stopwords and not wl.isdigit() and len(wl) >= 4:
-                if w not in keywords:
-                    keywords.append(w)
-                    
-        if not hashtags:
-            # Generate grounded hashtags from extracted keywords
-            for kw in keywords[:4]:
-                hashtags.append(f"#{kw.capitalize()}")
-        if not hashtags:
-            hashtags = [f"#{handle.replace('_', '').replace('.', '')}", "#Update", "#SocialMedia"]
-
-        return keywords[:6], hashtags[:8]
 
     def fetch_account_data(
         self,
@@ -302,148 +686,178 @@ class LiveWebScraperService(BaseDataService):
         end_date: datetime.date,
     ) -> Dict[str, Any]:
         """
-        Executes live web scraping for the profile, then computes grounded,
-        realistic engagement analytics for the requested date window.
+        Executes live web scraping for the profile, then computes
+        engagement analytics strictly from scraped data.
+        No synthetic/random data is generated.
         """
         handle = clean_handle(raw_account)
         platform_lower = platform.lower()
 
-        # 1. Scrape live profile
+        if isinstance(start_date, datetime.datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime.datetime):
+            end_date = end_date.date()
+
+        # 1. Scrape live profile and real posts
+        raw_scraped_posts = []
         if platform_lower == "threads":
             profile = self._scrape_threads_profile(handle)
         elif platform_lower == "tiktok":
             profile = self._scrape_tiktok_profile(handle)
         else:
+            # 1. Fetch live profile metadata reliably via social crawler headers (< 1s)
             profile = self._scrape_instagram_profile(handle)
+            # 2. Attempt Chrome headless dump-dom to extract rendered posts if available
+            if self._get_chrome_path():
+                chrome_result = self._scrape_instagram_with_chrome(handle)
+                if chrome_result:
+                    if chrome_result.get("scraped_posts"):
+                        raw_scraped_posts = chrome_result["scraped_posts"]
+                    if not profile.get("success") and chrome_result.get("success"):
+                        profile = chrome_result
 
-        seed = int(hashlib.md5(f"{handle}_{platform}".encode()).hexdigest()[:8], 16)
-        rng = random.Random(seed)
+        # If profile was NOT found at all
+        if not profile.get("success"):
+            return {
+                "handle": handle,
+                "display_name": handle,
+                "platform": platform,
+                "avatar_url": _generate_dynamic_account_card(handle),
+                "bio": f"Akun @{handle} tidak ditemukan di {platform}.",
+                "followers": 0,
+                "start_followers": 0,
+                "growth_rate_pct": 0.0,
+                "following": 0,
+                "total_posts_lifetime": 0,
+                "is_verified": False,
+                "historical_followers": [],
+                "posts": [],
+                "not_found": True,
+                "data_source": f"Akun @{handle} Tidak Ditemukan",
+            }
 
-        if profile.get("success"):
-            followers = profile["followers"]
-            following = profile["following"]
-            total_posts_lifetime = max(1, profile["total_posts"])
-            display_name = profile["display_name"]
-            bio = profile["bio"]
-            avatar_url = profile["avatar_url"]
-            source_tag = "Live Web Scraper (Direct Verified)"
-        else:
-            # Fallback estimation only if network error / private
-            followers = rng.randint(250, 2500)
-            following = rng.randint(80, 400)
-            total_posts_lifetime = rng.randint(20, 150)
-            display_name = handle.replace("_", " ").replace(".", " ").title()
-            bio = f"Akun {display_name} ({platform})."
-            avatar_url = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80"
-            source_tag = "Live Scraper (Smart Baseline Estimation)"
+        followers = profile["followers"]
+        following = profile["following"]
+        total_posts_lifetime = max(0, profile["total_posts"])
+        display_name = profile["display_name"]
+        bio = profile["bio"]
+        avatar_url = profile["avatar_url"] if profile.get("avatar_url") else _generate_dynamic_account_card(handle)
+        source_tag = "Live Web Scraper (Chrome Headless)" if raw_scraped_posts else "Live Web Scraper (OG Tags)"
 
         days_count = max(1, (end_date - start_date).days + 1)
 
-        # 2. Realistically determine posts count in the selected date window based on account posting velocity
-        # Accounts with low lifetime posts (e.g. 73 posts over ~4.5 years / 1600 days) average ~0.045 posts/day.
-        # In a 7-day or 8-day window, expected posts is ~0.3 (meaning 0 posts occurred in that short timeframe).
-        lifetime_daily_rate = total_posts_lifetime / 1600.0
-        expected_posts_in_window = lifetime_daily_rate * days_count
-        variance = rng.uniform(0.85, 1.15)
-        adjusted_posts = expected_posts_in_window * variance
-
-        if adjusted_posts < 0.7:
-            window_posts_count = 0
-        else:
-            window_posts_count = max(1, min(total_posts_lifetime, int(round(adjusted_posts))))
-
-        # 3. Industry-calibrated Engagement Rate (ER) based on actual follower scale
-        if followers <= 500:
-            target_er = rng.uniform(4.5, 7.5)     # Nano: 4.5% - 7.5%
-        elif followers <= 5_000:
-            target_er = rng.uniform(2.8, 5.0)     # Micro 1: 2.8% - 5.0%
-        elif followers <= 25_000:
-            target_er = rng.uniform(2.0, 3.8)     # Micro 2: 2.0% - 3.8%
-        elif followers <= 100_000:
-            target_er = rng.uniform(1.4, 2.6)     # Mid: 1.4% - 2.6%
-        elif followers <= 1_000_000:
-            target_er = rng.uniform(0.9, 1.8)     # Macro: 0.9% - 1.8%
-        else:
-            target_er = rng.uniform(0.5, 1.2)     # Mega: 0.5% - 1.2%
-
-        # Target total interactions per post based on exact follower count
-        avg_interactions_per_post = max(1, int(round((followers * (target_er / 100.0)))))
-        
-        # 4. Realistic Follower Growth Trajectory
-        # Organic monthly growth is typically 0.8% to 3.2%
-        growth_rate_pct = round(rng.uniform(0.8, 3.2), 2)
-        start_followers = max(1, int(round(followers / (1.0 + (growth_rate_pct / 100.0)))))
-
-        daily_followers = []
-        step = (followers - start_followers) / days_count
-        for i in range(days_count):
-            d = start_date + datetime.timedelta(days=i)
-            jitter = rng.uniform(-0.001, 0.001) * followers
-            cur_f = int(round(start_followers + (step * i) + jitter))
-            daily_followers.append({
-                "date": d.strftime("%Y-%m-%d"),
-                "followers": max(1, cur_f),
-            })
-        daily_followers[-1]["followers"] = followers
-
-        # 5. Extract topics & hashtags from bio
-        keywords, hashtags_pool = self._extract_bio_keywords_and_hashtags(bio, display_name, handle)
-
-        # 6. Generate contextual posts within date range (if any occurred)
+        # 2. Build posts list from REAL scraped data only — no fake posts
         posts = []
-        if window_posts_count > 0:
-            step_days = max(1, days_count // window_posts_count)
-            formats_pool = ["Carousel", "Single Image", "Reels/Video"] if platform_lower != "tiktok" else ["Reels/Video"]
+        has_real_post_metrics = False
 
-            for idx in range(window_posts_count):
-                offset_days = min(days_count - 1, idx * step_days + rng.randint(0, 1))
-                post_date = start_date + datetime.timedelta(days=offset_days)
-            # Realistic active hours (peak at 11-13 or 18-21)
-            hour = rng.choice([9, 11, 12, 13, 16, 18, 19, 20])
-            minute = rng.randint(0, 59)
-            post_timestamp = datetime.datetime.combine(post_date, datetime.time(hour, minute))
+        if raw_scraped_posts:
+            # Parallel fetch ground-truth post metrics (exact likes, comments, caption, date)
+            shortcodes = [r_post["shortcode"] for r_post in raw_scraped_posts]
+            details_map = {}
+            if shortcodes:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(shortcodes))) as executor:
+                    future_to_sc = {
+                        executor.submit(self._fetch_instagram_post_metadata, sc): sc
+                        for sc in shortcodes
+                    }
+                    for future in concurrent.futures.as_completed(future_to_sc):
+                        sc = future_to_sc[future]
+                        try:
+                            res = future.result()
+                            if res:
+                                details_map[sc] = res
+                        except Exception as e:
+                            logger.debug("Failed to fetch post metadata %s: %s", sc, e)
 
-            # Post interaction with realistic distribution
-            post_variance = rng.uniform(0.65, 1.45)
-            interactions = max(1, int(round(avg_interactions_per_post * post_variance)))
+            for idx, r_post in enumerate(raw_scraped_posts):
+                shortcode = r_post["shortcode"]
+                real_meta = details_map.get(shortcode)
 
-            likes = max(1, int(round(interactions * 0.82)))
-            comments = max(0, int(round(interactions * 0.08)))
-            shares = max(0, int(round(interactions * 0.05)))
-            saves = max(0, interactions - likes - comments - shares)
-            total_inter = likes + comments + shares + saves
+                post_dt = real_meta.get("post_dt") if real_meta else None
+                date_str = real_meta.get("date_str") if real_meta else ""
+                caption = real_meta.get("caption") if real_meta and real_meta.get("caption") else ""
 
-            post_er = round((total_inter / max(1, followers)) * 100.0, 2)
+                alt_dt, alt_date_str, content_type, alt_caption = self._parse_instagram_post_metadata(
+                    r_post.get("alt", ""), shortcode, handle
+                )
+                if not post_dt:
+                    post_dt = alt_dt
+                if not date_str:
+                    date_str = alt_date_str
+                if not caption:
+                    caption = alt_caption
+                if not caption:
+                    caption = "Caption tidak tersedia."
 
-            post_format = rng.choice(formats_pool)
-            post_thumb = rng.choice(CURATED_POST_IMAGES)
+                # Determine if post falls within date range
+                in_date_range = True
+                if post_dt:
+                    post_date = post_dt.date()
+                    in_date_range = (start_date <= post_date <= end_date)
 
-            # Build contextual caption using real bio context
-            kw_part = f" seputar {rng.choice(keywords)}" if keywords else ""
-            ht_part = " ".join(rng.sample(hashtags_pool, min(len(hashtags_pool), 3)))
-            caption = f"Update terbaru dari @{handle}{kw_part}! Simak informasi selengkapnya dan bagikan tanggapan Anda di kolom komentar. {ht_part}"
+                is_reel = "reel" in content_type.lower() or "video" in content_type.lower()
 
-            posts.append({
-                "post_id": f"{handle}_{idx+1}",
-                "account": handle,
-                "date": post_date.strftime("%d %b %Y"),
-                "timestamp": post_timestamp.isoformat(),
-                "day_of_week": post_timestamp.weekday(),
-                "hour": post_timestamp.hour,
-                "content_type": post_format,
-                "caption": caption,
-                "likes": likes,
-                "comments": comments,
-                "shares": shares,
-                "saves": saves,
-                "views": int(likes * rng.uniform(2.5, 6.0)),
-                "total_interactions": total_inter,
-                "post_er": post_er,
-                "thumbnail_url": post_thumb,
-                "post_url": f"https://www.{platform_lower}.com/{handle}/",
-            })
+                # Use REAL metrics if available from Instagram
+                if real_meta and (real_meta.get("likes", 0) > 0 or real_meta.get("comments", 0) > 0):
+                    likes = real_meta["likes"]
+                    comments = real_meta["comments"]
+                    has_real_post_metrics = True
+                    # Shares/saves are not exposed by Instagram OG — set to 0
+                    shares = 0
+                    saves = 0
+                    total_inter = likes + comments
+                    post_er = round((total_inter / max(1, followers)) * 100.0, 2) if followers > 0 else 0.0
+                    views = 0  # Not available from OG tags
+                    is_estimated = False
+                else:
+                    # No real metrics available — set to 0 and flag
+                    likes = 0
+                    comments = 0
+                    shares = 0
+                    saves = 0
+                    total_inter = 0
+                    post_er = 0.0
+                    views = 0
+                    is_estimated = True
 
-        posts.sort(key=lambda x: x["timestamp"], reverse=True)
+                post_entry = {
+                    "post_id": f"{handle}_{shortcode}",
+                    "account": handle,
+                    "date": date_str if date_str else "-",
+                    "timestamp": post_dt.isoformat() if post_dt else "",
+                    "day_of_week": post_dt.weekday() if post_dt else 0,
+                    "hour": post_dt.hour if post_dt else 12,
+                    "content_type": content_type,
+                    "caption": caption,
+                    "likes": likes,
+                    "comments": comments,
+                    "shares": shares,
+                    "saves": saves,
+                    "views": views,
+                    "total_interactions": total_inter,
+                    "post_er": post_er,
+                    "thumbnail_url": r_post["thumbnail_url"],
+                    "post_url": r_post["post_url"],
+                    "is_estimated": is_estimated,
+                    "in_date_range": in_date_range,
+                }
+                posts.append(post_entry)
+
+        # Sort posts by timestamp (newest first), posts without timestamp at end
+        posts.sort(key=lambda x: x.get("timestamp", "") or "", reverse=True)
+
+        # 3. Follower data — we only know current followers, no historical data
+        # Show flat line at current follower count (honest — no fake growth)
+        start_followers = followers
+        growth_rate_pct = 0.0
+        daily_followers = []
+        if followers > 0 and days_count > 0:
+            for i in range(min(days_count, 90)):  # Cap at 90 days for performance
+                d = start_date + datetime.timedelta(days=i)
+                daily_followers.append({
+                    "date": d.strftime("%Y-%m-%d"),
+                    "followers": followers,
+                })
 
         return {
             "handle": handle,
@@ -455,10 +869,12 @@ class LiveWebScraperService(BaseDataService):
             "start_followers": start_followers,
             "growth_rate_pct": growth_rate_pct,
             "following": following,
+            "total_posts_lifetime": total_posts_lifetime,
             "is_verified": False,
             "historical_followers": daily_followers,
             "posts": posts,
             "data_source": source_tag,
+            "has_real_post_metrics": has_real_post_metrics,
         }
 
 

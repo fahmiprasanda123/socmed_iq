@@ -1,11 +1,12 @@
 """
 SocialIQ Benchmark - Social Media Benchmarking & Analytics Dashboard
 Streamlit Application Entrypoint.
+All data is sourced from live web scraping — no synthetic/fake data.
 """
 
 from __future__ import annotations
 import datetime
-import os
+import html as html_module
 import time
 from typing import Any, Dict, List
 import pandas as pd
@@ -18,12 +19,6 @@ from components.charts import (
     create_quadrant_scatter,
     create_timing_heatmap,
 )
-import importlib
-import services.analytics
-import services.data_fetcher
-importlib.reload(services.analytics)
-importlib.reload(services.data_fetcher)
-
 from services.analytics import (
     analyze_content_formats,
     build_comparison_matrix,
@@ -31,7 +26,7 @@ from services.analytics import (
     flatten_all_posts,
     generate_timing_heatmap_matrix,
 )
-from services.data_fetcher import LiveWebScraperService
+from services.data_fetcher import LiveWebScraperService, _generate_dynamic_account_card
 from utils.helpers import (
     clean_handle,
     format_number,
@@ -142,6 +137,17 @@ st.markdown(
         border-color: rgba(99, 102, 241, 0.5);
     }
 
+    /* No data notice */
+    .no-data-notice {
+        background: rgba(245, 158, 11, 0.08);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 0.82rem;
+        color: #FCD34D;
+        margin-top: 8px;
+    }
+
     /* Tab styling override */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -166,37 +172,33 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Session state initialization (empty inputs by default)
-if "main_acc_input" not in st.session_state or st.session_state.get("main_acc_input") == "shopee_id":
+
+def _escape_html(text: str) -> str:
+    """Escape user-supplied text before injecting into HTML to prevent XSS."""
+    return html_module.escape(str(text)) if text else ""
+
+
+def _is_safe_url(url: str) -> bool:
+    """Validate that a URL is safe for use in href/src attributes."""
+    if not url:
+        return False
+    safe_prefixes = ("https://", "http://", "data:image/")
+    return url.startswith(tuple(safe_prefixes))
+
+
+# Session state initialization (clean, no hardcoded values)
+if "main_acc_input" not in st.session_state:
     st.session_state.main_acc_input = ""
-if "comp_acc_input" not in st.session_state or "tokopedia" in st.session_state.get("comp_acc_input", ""):
+if "comp_acc_input" not in st.session_state:
     st.session_state.comp_acc_input = ""
 if "platform_choice" not in st.session_state:
     st.session_state.platform_choice = "Instagram"
 if "date_preset_choice" not in st.session_state:
     st.session_state.date_preset_choice = "Last 30 Days"
-
-
-# Caching benchmark pipeline for instant responses
-@st.cache_data(show_spinner=False, ttl=1800)
-def get_benchmark_dataset(
-    platform: str,
-    main_account: str,
-    competitors_tuple: tuple[str, ...],
-    start_date: datetime.date,
-    end_date: datetime.date,
-) -> Dict[str, Any]:
-    """
-    Live web scraper benchmarking pipeline.
-    """
-    service = LiveWebScraperService()
-    return service.fetch_benchmark_dataset(
-        platform=platform,
-        main_account=main_account,
-        competitors=list(competitors_tuple),
-        start_date=start_date,
-        end_date=end_date,
-    )
+if "benchmark_result" not in st.session_state:
+    st.session_state.benchmark_result = None
+if "last_analysis_params" not in st.session_state:
+    st.session_state.last_analysis_params = None
 
 
 # --- SIDEBAR INPUTS ---
@@ -226,7 +228,6 @@ with st.sidebar:
     selected_platform = st.selectbox(
         "Platform",
         platform_options,
-        index=platform_options.index(st.session_state.platform_choice),
         format_func=lambda x: f"{platform_icons[x]} {x}",
         key="platform_choice",
     )
@@ -234,7 +235,6 @@ with st.sidebar:
     # Main Account Input
     main_acc_str = st.text_input(
         "Akun Utama (Milik Anda)",
-        value=st.session_state.main_acc_input,
         placeholder="misal: akun_anda atau @akun_anda",
         help="Masukkan URL lengkap atau handle akun utama Anda.",
         key="main_acc_input",
@@ -243,7 +243,6 @@ with st.sidebar:
     # Competitor Accounts Input
     comp_acc_str = st.text_area(
         "Akun Kompetitor (1–5 akun, 1 per baris)",
-        value=st.session_state.comp_acc_input,
         height=110,
         placeholder="kompetitor1\nkompetitor2\nkompetitor3",
         help="Masukkan 1 hingga 5 akun kompetitor untuk dibandingkan (1 per baris).",
@@ -254,7 +253,6 @@ with st.sidebar:
     date_preset = st.radio(
         "Rentang Waktu Analisis",
         ["Last 7 Days", "Last 30 Days", "Custom Range"],
-        index=["Last 7 Days", "Last 30 Days", "Custom Range"].index(st.session_state.date_preset_choice),
         horizontal=True,
         key="date_preset_choice",
     )
@@ -307,37 +305,87 @@ if not main_handle:
     )
     st.stop()
 
-# Execution with Streamlit Status Indicator
-status_box = st.empty()
 
-with st.status(f"⚡ Melakukan live scraping untuk @{main_handle} vs {len(competitors)} kompetitor...", expanded=False) as status:
-    st.write(f"1. Mengambil data live profil {selected_platform} untuk @{main_handle}...")
-    time.sleep(0.1)
-    st.write(f"2. Mengambil data follower, total post, dan metrik kompetitor...")
+# --- GATED EXECUTION: Only run scraping when Analyze button is clicked ---
+current_params = (selected_platform, main_handle, tuple(competitors), str(start_dt), str(end_dt))
+
+if analyze_clicked:
+    # User clicked analyze — run scraping
+    with st.status(f"⚡ Melakukan live scraping untuk @{_escape_html(main_handle)} vs {len(competitors)} kompetitor...", expanded=False) as status:
+        st.write(f"1. Mengambil data live profil {selected_platform} untuk @{_escape_html(main_handle)}...")
+        time.sleep(0.1)
+        st.write(f"2. Mengambil data follower, total post, dan metrik kompetitor...")
+        
+        benchmark_data = LiveWebScraperService().fetch_benchmark_dataset(
+            platform=selected_platform,
+            main_account=main_handle,
+            competitors=list(competitors),
+            start_date=start_dt,
+            end_date=end_dt,
+        )
+        
+        st.write("3. Menghitung Engagement Rate (ER), Page Performance Index (PPI), dan metrik lainnya...")
+        time.sleep(0.1)
+        st.write("4. Menyusun matriks perbandingan dan visualisasi...")
+        status.update(label="✅ Live Web Scraping Selesai!", state="complete", expanded=False)
     
-    benchmark_data = get_benchmark_dataset(
-        platform=selected_platform,
-        main_account=main_handle,
-        competitors_tuple=tuple(competitors),
-        start_date=start_dt,
-        end_date=end_dt,
+    # Store result in session state
+    st.session_state.benchmark_result = benchmark_data
+    st.session_state.last_analysis_params = current_params
+
+elif st.session_state.benchmark_result is not None:
+    # Use cached result from previous analysis
+    benchmark_data = st.session_state.benchmark_result
+else:
+    # No analysis has been run yet — prompt user
+    st.markdown(
+        f"""
+        <div style="text-align:center; padding: 40px 20px; background: rgba(30, 41, 59, 0.4); border: 1px dashed rgba(255,255,255,0.15); border-radius: 16px; margin-top: 20px;">
+            <div style="font-size: 36px; margin-bottom: 12px;">🔍</div>
+            <h3 style="color: #FFFFFF; font-weight: 700; margin-bottom: 8px;">Siap Menganalisis @{_escape_html(main_handle)}</h3>
+            <p style="color: #94A3B8; font-size: 0.9rem;">
+                Klik tombol <b style="color: #818CF8;">🚀 Analyze & Benchmark</b> di sidebar untuk memulai live scraping.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    
-    st.write("3. Menghitung Engagement Rate (ER) tier, Page Performance Index (PPI), dan Follower Trajectory...")
-    time.sleep(0.1)
-    st.write("4. Menyusun matriks perbandingan, kuadran efisiensi, dan keyword intelligence...")
-    status.update(label="✅ Live Web Scraping Selesai!", state="complete", expanded=False)
+    st.stop()
 
 accounts_data = benchmark_data.get("accounts", [])
 days_count = benchmark_data.get("date_range", {}).get("days", 30)
+
+# Check for not found accounts and display informative alert
+not_found_accounts = [acc["handle"] for acc in accounts_data if acc.get("not_found")]
+if not_found_accounts:
+    st.warning(
+        f"⚠️ **Akun tidak ditemukan:** {', '.join(['@' + _escape_html(h) for h in not_found_accounts])} tidak terdaftar atau tidak aktif di {selected_platform}. "
+        "Pastikan ejaan username sudah benar."
+    )
+
+# Check for accounts without real post metrics
+no_metrics_accounts = [
+    acc["handle"] for acc in accounts_data 
+    if not acc.get("not_found") and not acc.get("has_real_post_metrics", False)
+]
+if no_metrics_accounts:
+    st.info(
+        f"ℹ️ **Data post terbatas:** Metrik likes/comments untuk {', '.join(['@' + _escape_html(h) for h in no_metrics_accounts])} "
+        "belum dapat diambil dari scraping. Engagement Rate dan metrik interaksi mungkin menampilkan 0. "
+        "Hal ini bisa terjadi jika Instagram membatasi akses data publik."
+    )
 
 # Build analytics DataFrames
 comparison_df = build_comparison_matrix(accounts_data, days_count)
 posts_df = flatten_all_posts(accounts_data)
 
+if comparison_df.empty:
+    st.error("Tidak ada data akun yang berhasil di-scrape. Pastikan username sudah benar dan coba lagi.")
+    st.stop()
+
 # Extract main account row and competitor averages
-main_row = comparison_df[comparison_df["Is Main"] == True]
-comp_rows = comparison_df[comparison_df["Is Main"] == False]
+main_row = comparison_df.loc[comparison_df["Is Main"].eq(True)]
+comp_rows = comparison_df.loc[comparison_df["Is Main"].eq(False)]
 
 if not main_row.empty:
     main_kpi = main_row.iloc[0]
@@ -355,8 +403,8 @@ st.markdown(
     f"""
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom:18px; padding:12px 18px; background:rgba(30, 41, 59, 0.5); border:1px solid rgba(255,255,255,0.08); border-radius:12px;">
         <div style="display:flex; align-items:center; gap:12px;">
-            <span class="badge-pill badge-primary">{selected_platform.upper()}</span>
-            <span style="font-size:1.25rem; font-weight:700; color:#FFFFFF;">@{main_handle}</span>
+            <span class="badge-pill badge-primary">{_escape_html(selected_platform.upper())}</span>
+            <span style="font-size:1.25rem; font-weight:700; color:#FFFFFF;">@{_escape_html(main_handle)}</span>
             <span style="color:#94A3B8; font-size:0.9rem;">vs {len(competitors)} Kompetitor</span>
         </div>
         <div style="color:#94A3B8; font-size:0.85rem;">
@@ -390,10 +438,12 @@ with tab_overview:
     diff_posts = main_kpi["Total Posts"] - avg_comp_posts
 
     def render_delta_html(diff: float, is_pct: bool = False, suffix: str = "vs Avg") -> str:
+        if comp_rows.empty:
+            return "<div class='metric-delta delta-neu'>— (tidak ada kompetitor)</div>"
         sign = "+" if diff > 0 else ""
         css_class = "delta-pos" if diff > 0 else ("delta-neg" if diff < 0 else "delta-neu")
         val_str = f"{sign}{diff:.2f}%" if is_pct else f"{sign}{format_number(diff)}"
-        return f"<div class='metric-delta {css_class}'>{val_str} {suffix}</div>"
+        return f"<div class='metric-delta {css_class}'>{val_str} {_escape_html(suffix)}</div>"
 
     with c1:
         st.markdown(
@@ -414,6 +464,7 @@ with tab_overview:
                 <div class="metric-label">📈 Follower Growth</div>
                 <div class="metric-value">{format_percent(main_kpi['Growth (%)'])}</div>
                 {render_delta_html(diff_growth, is_pct=True)}
+                <div class="no-data-notice">⚠️ Data historis tidak tersedia — pertumbuhan hanya bisa diukur jika ada snapshot sebelumnya.</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -435,9 +486,9 @@ with tab_overview:
         st.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">📮 Total Posts ({days_count}d)</div>
+                <div class="metric-label">📮 Scraped Posts</div>
                 <div class="metric-value">{main_kpi['Total Posts']}</div>
-                {render_delta_html(diff_posts, suffix='vs Avg Freq')}
+                {render_delta_html(diff_posts, suffix='vs Avg')}
             </div>
             """,
             unsafe_allow_html=True,
@@ -449,13 +500,17 @@ with tab_overview:
     col_t_header, col_export = st.columns([3, 1])
     with col_t_header:
         st.subheader("📋 Comparison Matrix")
-        st.caption("Perbandingan komprehensif metrik utama akun Anda dengan kompetitor.")
+        st.caption("Perbandingan komprehensif metrik utama akun Anda dengan kompetitor. Data berasal dari live scraping.")
     
     # Format display DataFrame
+    col_period_posts = f"Posts (Scraped)"
     display_df = comparison_df[[
-        "Profile", "Followers", "Growth (%)", "Total Posts", "Posts/Day", 
+        "Profile", "Followers", "Growth (%)", "Lifetime Posts", "Total Posts", "Posts/Day", 
         "Avg Likes", "Avg Comments", "Shares/Saves", "PPI", "ER (%)"
-    ]].copy()
+    ]].rename(columns={
+        "Lifetime Posts": "Total Posts (Profil)",
+        "Total Posts": col_period_posts,
+    }).copy()
 
     # Downloads
     with col_export:
@@ -480,44 +535,37 @@ with tab_overview:
             )
 
     # Render styled dataframe
+    fmt_dict = {
+        "Followers": "{:,.0f}",
+        "Growth (%)": "{:+.2f}%",
+        "Total Posts (Profil)": "{:,.0f}",
+        col_period_posts: "{:,.0f}",
+        "Posts/Day": "{:.2f}",
+        "Avg Likes": "{:,.0f}",
+        "Avg Comments": "{:,.0f}",
+        "Shares/Saves": "{:,.0f}",
+        "PPI": "{:.1f}",
+        "ER (%)": "{:.2f}%",
+    }
     try:
         st.dataframe(
-            display_df.style.format({
-                "Followers": "{:,.0f}",
-                "Growth (%)": "{:+.2f}%",
-                "Total Posts": "{:,.0f}",
-                "Posts/Day": "{:.2f}",
-                "Avg Likes": "{:,.0f}",
-                "Avg Comments": "{:,.0f}",
-                "Shares/Saves": "{:,.0f}",
-                "PPI": "{:.1f}",
-                "ER (%)": "{:.2f}%",
-            }).background_gradient(subset=["PPI", "ER (%)"], cmap="BuPu"),
+            display_df.style.format(fmt_dict).background_gradient(subset=["PPI", "ER (%)"], cmap="BuPu"),
             use_container_width=True,
             height=220,
         )
     except Exception:
         st.dataframe(
-            display_df.style.format({
-                "Followers": "{:,.0f}",
-                "Growth (%)": "{:+.2f}%",
-                "Total Posts": "{:,.0f}",
-                "Posts/Day": "{:.2f}",
-                "Avg Likes": "{:,.0f}",
-                "Avg Comments": "{:,.0f}",
-                "Shares/Saves": "{:,.0f}",
-                "PPI": "{:.1f}",
-                "ER (%)": "{:.2f}%",
-            }),
+            display_df.style.format(fmt_dict),
             use_container_width=True,
             height=220,
         )
 
-    st.caption("ℹ️ **PPI (Page Performance Index)**: Skor komposit 0–100 menggabungkan Engagement Rate (60%) dan Follower Growth Rate (40%).")
+    st.caption("ℹ️ **PPI (Page Performance Index)**: Skor komposit 0–100 menggabungkan Engagement Rate (60%) dan Follower Growth Rate (40%). Growth saat ini 0% karena data historis belum tersedia.")
 
     # 3. Follower Growth Trajectory Chart
     st.markdown("---")
     st.plotly_chart(create_follower_growth_chart(accounts_data), use_container_width=True)
+    st.caption("ℹ️ Grafik menunjukkan jumlah follower saat ini. Tren pertumbuhan akan terlihat setelah beberapa sesi analisis dilakukan.")
 
 
 # ==============================================================================
@@ -547,33 +595,43 @@ with tab_quadrant:
     st.plotly_chart(create_quadrant_scatter(comparison_df, main_handle), use_container_width=True)
 
     # Automatic Diagnostic & Strategic Recommendation Card
-    x_med = comparison_df["Posts/Day"].median()
-    y_med = comparison_df["ER (%)"].median()
+    active_accounts = comparison_df[comparison_df["Posts/Day"] > 0]
+    if not active_accounts.empty:
+        x_med = active_accounts["Posts/Day"].median()
+        y_med = active_accounts["ER (%)"].median()
+    else:
+        x_med = 0
+        y_med = 0
+    
     main_freq = main_kpi["Posts/Day"]
     main_er = main_kpi["ER (%)"]
 
-    is_high_freq = main_freq >= x_med
-    is_high_er = main_er >= y_med
-
-    if is_high_er and not is_high_freq:
-        quadrant_name = "✨ High Efficiency (Niche Performer)"
-        rec_text = "Akun Anda memiliki engagement rate di atas rata-rata industri dengan kuantitas posting yang terukur. **Rekomendasi:** Anda memiliki ruang untuk bereksperimen menambah 1–2 postingan berkualitas per minggu untuk memperluas jangkauan organik tanpa menurunkan engagement."
-    elif is_high_er and is_high_freq:
-        quadrant_name = "🏆 Powerhouses (Market Leader)"
-        rec_text = "Akun Anda berada di posisi dominan! Konsistensi tinggi diimbangi oleh respon audiens yang sangat antusias. **Rekomendasi:** Pertahankan pilar konten juara dan manfaatkan momentum ini untuk meluncurkan kampanye konversi produk langsung."
-    elif not is_high_er and is_high_freq:
-        quadrant_name = "⚠️ Spamming / Audience Fatigue"
-        rec_text = "Frekuensi posting akun Anda di atas median, namun tingkat interaksi audiens berada di bawah rata-rata. **Rekomendasi:** Kurangi volume postingan harian. Fokus pada kualitas visual, storytelling, dan format Carousel/Reels yang memicu interaksi aktif (saves & shares)."
+    if main_freq == 0 and main_er == 0:
+        quadrant_name = "ℹ️ Data Belum Tersedia"
+        rec_text = "Metrik post untuk akun Anda belum berhasil di-scrape. Coba analisis ulang atau periksa apakah akun memiliki postingan publik yang bisa diakses."
     else:
-        quadrant_name = "💤 Low Impact"
-        rec_text = "Frekuensi dan engagement rate akun Anda saat ini berada di bawah median kompetitor. **Rekomendasi:** Lakukan audit konten kompetitor di Tab 4 untuk melihat pilar topik dan hashtag terbaik, lalu tingkatkan jadwal posting minimal 1x per hari di jam optimal (Tab 3)."
+        is_high_freq = main_freq >= x_med if x_med > 0 else False
+        is_high_er = main_er >= y_med if y_med > 0 else False
+
+        if is_high_er and not is_high_freq:
+            quadrant_name = "✨ High Efficiency (Niche Performer)"
+            rec_text = "Akun Anda memiliki engagement rate di atas rata-rata industri dengan kuantitas posting yang terukur. **Rekomendasi:** Anda memiliki ruang untuk bereksperimen menambah 1–2 postingan berkualitas per minggu untuk memperluas jangkauan organik tanpa menurunkan engagement."
+        elif is_high_er and is_high_freq:
+            quadrant_name = "🏆 Powerhouses (Market Leader)"
+            rec_text = "Akun Anda berada di posisi dominan! Konsistensi tinggi diimbangi oleh respon audiens yang sangat antusias. **Rekomendasi:** Pertahankan pilar konten juara dan manfaatkan momentum ini untuk meluncurkan kampanye konversi produk langsung."
+        elif not is_high_er and is_high_freq:
+            quadrant_name = "⚠️ Spamming / Audience Fatigue"
+            rec_text = "Frekuensi posting akun Anda di atas median, namun tingkat interaksi audiens berada di bawah rata-rata. **Rekomendasi:** Kurangi volume postingan harian. Fokus pada kualitas visual, storytelling, dan format Carousel/Reels yang memicu interaksi aktif (saves & shares)."
+        else:
+            quadrant_name = "💤 Low Impact"
+            rec_text = "Frekuensi dan engagement rate akun Anda saat ini berada di bawah median kompetitor. **Rekomendasi:** Lakukan audit konten kompetitor di Tab 4 untuk melihat pilar topik dan hashtag terbaik, lalu tingkatkan jadwal posting minimal 1x per hari di jam optimal (Tab 3)."
 
     st.markdown(
         f"""
         <div style="background:rgba(15, 23, 42, 0.9); border:1px solid rgba(99, 102, 241, 0.3); border-radius:12px; padding:18px 22px; margin-top:10px;">
             <div style="font-size:0.8rem; text-transform:uppercase; color:#818CF8; font-weight:700;">Status Diagnostik Akun Anda</div>
-            <div style="font-size:1.15rem; font-weight:700; color:#FFFFFF; margin:4px 0 8px 0;">{quadrant_name}</div>
-            <p style="margin:0; font-size:0.9rem; color:#CBD5E1; line-height:1.5;">{rec_text}</p>
+            <div style="font-size:1.15rem; font-weight:700; color:#FFFFFF; margin:4px 0 8px 0;">{_escape_html(quadrant_name)}</div>
+            <p style="margin:0; font-size:0.9rem; color:#CBD5E1; line-height:1.5;">{_escape_html(rec_text)}</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -588,14 +646,14 @@ with tab_timing:
     st.caption("Peta intensitas interaksi 7 Hari x 24 Jam untuk menemukan jendela waktu posting paling menguntungkan.")
 
     # Filter selector
-    all_account_choices = ["All Accounts"] + [acc["handle"] for acc in accounts_data]
+    all_account_choices = ["All Accounts"] + [acc["handle"] for acc in accounts_data if not acc.get("not_found")]
     col_acc_filter, col_metric_filter = st.columns([2, 2])
     
     with col_acc_filter:
         selected_timing_acc = st.selectbox(
             "Pilih Profil untuk Dianalisis",
             all_account_choices,
-            format_func=lambda x: f"Semua Profil (Aggregated)" if x == "All Accounts" else f"@{x} " + ("(You)" if x == main_handle else ""),
+            format_func=lambda x: "Semua Profil (Aggregated)" if x == "All Accounts" else f"@{x} " + ("(You)" if x == main_handle else ""),
         )
 
     with col_metric_filter:
@@ -613,26 +671,40 @@ with tab_timing:
     )
 
     # Best time recommendation callout
-    st.markdown(
-        f"""
+    if peak_info.get("value", 0) > 0:
+        callout_html = f"""
         <div style="display:flex; align-items:center; gap:16px; background:linear-gradient(90deg, rgba(245, 158, 11, 0.15) 0%, rgba(99, 102, 241, 0.1) 100%); border:1px solid rgba(245, 158, 11, 0.4); border-radius:12px; padding:16px 20px; margin:14px 0 20px 0;">
             <div style="font-size:28px;">⭐</div>
             <div>
                 <div style="font-size:0.8rem; text-transform:uppercase; color:#FCD34D; font-weight:700;">Rekomendasi Waktu Posting Optimal</div>
                 <div style="font-size:1.1rem; font-weight:700; color:#FFFFFF;">
-                    Hari {peak_info['day']}, Pukul {peak_info['hour_label']}
+                    Hari {_escape_html(peak_info['day'])}, Pukul {_escape_html(peak_info['hour_label'])}
                 </div>
                 <div style="font-size:0.85rem; color:#E2E8F0;">
                     Slot ini menghasilkan rata-rata tertinggi sebesar <b style="color:#FCD34D;">{format_number(peak_info['value'])} interaksi</b> per postingan!
                 </div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    else:
+        callout_html = f"""
+        <div style="display:flex; align-items:center; gap:16px; background:rgba(30, 41, 59, 0.5); border:1px solid rgba(255, 255, 255, 0.1); border-radius:12px; padding:16px 20px; margin:14px 0 20px 0;">
+            <div style="font-size:28px;">ℹ️</div>
+            <div>
+                <div style="font-size:0.8rem; text-transform:uppercase; color:#94A3B8; font-weight:700;">Data Waktu Posting</div>
+                <div style="font-size:1.0rem; font-weight:600; color:#FFFFFF;">
+                    Belum ada data interaksi postingan yang tersedia untuk profil terpilih.
+                </div>
+                <div style="font-size:0.85rem; color:#94A3B8;">
+                    Data timing membutuhkan metrik likes/comments dari postingan yang berhasil di-scrape.
+                </div>
+            </div>
+        </div>
+        """
+    st.markdown(callout_html, unsafe_allow_html=True)
 
     # Heatmap Plotly Chart
-    chart_title = f"Heatmap Intensitas Interaksi ({selected_timing_acc})" if selected_timing_acc != "All Accounts" else "Heatmap Intensitas Interaksi Seluruh Akun"
+    chart_title = f"Heatmap Intensitas Interaksi ({_escape_html(selected_timing_acc)})" if selected_timing_acc != "All Accounts" else "Heatmap Intensitas Interaksi Seluruh Akun"
     st.plotly_chart(
         create_timing_heatmap(heatmap_matrix, peak_info, title=chart_title),
         use_container_width=True,
@@ -676,6 +748,8 @@ with tab_content:
                 use_container_width=True,
                 height=180,
             )
+        else:
+            st.info("Data format konten belum tersedia. Metrik post perlu berhasil di-scrape terlebih dahulu.")
 
     st.markdown("---")
 
@@ -686,7 +760,7 @@ with tab_content:
     with col_f_acc:
         filter_post_acc = st.selectbox(
             "Filter Berdasarkan Akun",
-            ["All Profiles"] + [acc["handle"] for acc in accounts_data],
+            ["All Profiles"] + [acc["handle"] for acc in accounts_data if not acc.get("not_found")],
             key="filter_posts_acc",
         )
     with col_f_sort:
@@ -707,7 +781,7 @@ with tab_content:
     if filter_post_acc != "All Profiles":
         ranked_posts_df = ranked_posts_df[ranked_posts_df["account"] == filter_post_acc]
     
-    if not ranked_posts_df.empty:
+    if not ranked_posts_df.empty and sort_by_metric in ranked_posts_df.columns:
         ranked_posts_df = ranked_posts_df.sort_values(by=sort_by_metric, ascending=False).head(9)
         
         # Display posts in a 3-column grid
@@ -715,33 +789,58 @@ with tab_content:
         for idx, (_, post_row) in enumerate(ranked_posts_df.iterrows()):
             col_target = post_cols[idx % 3]
             with col_target:
-                caption_text = post_row.get("caption", "")
-                if len(caption_text) > 130:
-                    caption_text = caption_text[:130] + "..."
+                caption_text = _escape_html(post_row.get("caption", ""))
+                if len(caption_text) > 170:
+                    caption_text = caption_text[:170] + "..."
 
                 is_main_post = post_row.get("is_main", False)
-                handle_badge = f"<span class='badge-pill badge-primary'>@{post_row['account']}</span>" if is_main_post else f"<span class='badge-pill' style='background:rgba(255,255,255,0.1); color:#CBD5E1;'>@{post_row['account']}</span>"
-                post_date_display = post_row.get("date") or (str(post_row.get("timestamp", ""))[:10] if post_row.get("timestamp") else "-")
+                safe_account = _escape_html(post_row.get("account", ""))
+                handle_badge = f"<span class='badge-pill badge-primary'>@{safe_account}</span>" if is_main_post else f"<span class='badge-pill' style='background:rgba(255,255,255,0.1); color:#CBD5E1;'>@{safe_account}</span>"
+                
+                post_date_display = _escape_html(
+                    post_row.get("date") or (str(post_row.get("timestamp", ""))[:10] if post_row.get("timestamp") else "-")
+                )
+                content_type = post_row.get("content_type", "Post")
+                fmt_badge = "📑 Carousel" if "Carousel" in content_type else ("📹 Reels" if "Reel" in content_type else "🖼️ Single")
+
+                post_acc = post_row.get("account", "account")
+                fallback_card = _generate_dynamic_account_card(post_acc)
+                raw_thumb = post_row.get("thumbnail_url") or fallback_card
+                
+                # Validate URLs for security
+                safe_thumb = raw_thumb if _is_safe_url(raw_thumb) else fallback_card
+                safe_fallback = fallback_card if _is_safe_url(fallback_card) else ""
+                
+                post_url = post_row.get("post_url", "#")
+                safe_post_url = post_url if _is_safe_url(post_url) else "#"
+
+                # Show estimation notice if metrics are estimated
+                is_estimated = post_row.get("is_estimated", False)
+                estimation_badge = "<span style='font-size:0.65rem; color:#F59E0B; margin-left:4px;'>⚠️ Metrik tidak tersedia</span>" if is_estimated else ""
 
                 st.markdown(
                     f"""
                     <div class="post-card">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                            {handle_badge}
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                {handle_badge}
+                                <span style="font-size:0.7rem; color:#A5B4FC; background:rgba(99,102,241,0.18); border:1px solid rgba(99,102,241,0.35); padding:2px 7px; border-radius:10px; font-weight:600;">{fmt_badge}</span>
+                            </div>
                             <span style="font-size:0.75rem; color:#94A3B8;">{post_date_display}</span>
                         </div>
-                        <img src="{post_row['thumbnail_url']}" style="width:100%; height:160px; object-fit:cover; border-radius:8px; margin-bottom:10px;" />
-                        <div style="font-size:0.82rem; color:#E2E8F0; line-height:1.4; margin-bottom:12px; min-height:48px;">
+                        <img src="{safe_thumb}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='{safe_fallback}';" style="width:100%; height:165px; object-fit:cover; border-radius:8px; margin-bottom:10px;" />
+                        <div style="font-size:0.83rem; color:#E2E8F0; line-height:1.45; margin-bottom:12px; min-height:56px;">
                             {caption_text}
                         </div>
-                        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; background:rgba(30,41,59,0.5); padding:8px 10px; border-radius:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; background:rgba(30,41,59,0.55); padding:8px 10px; border-radius:8px;">
                             <span>❤️ <b>{format_number(post_row['likes'])}</b></span>
                             <span>💬 <b>{format_number(post_row['comments'])}</b></span>
                             <span>🔁 <b>{format_number(post_row['shares'])}</b></span>
                             <span style="color:#10B981; font-weight:700;">⚡ {post_row['post_er']:.2f}%</span>
                         </div>
+                        {estimation_badge}
                         <div style="margin-top:10px; text-align:right;">
-                            <a href="{post_row['post_url']}" target="_blank" style="font-size:0.78rem; color:#818CF8; text-decoration:none; font-weight:600;">Lihat Postingan Asli ↗</a>
+                            <a href="{safe_post_url}" target="_blank" style="font-size:0.78rem; color:#818CF8; text-decoration:none; font-weight:600;">Lihat Postingan Asli ↗</a>
                         </div>
                     </div>
                     """,
@@ -754,7 +853,7 @@ with tab_content:
 
     # 3. Hashtag & Keyword Intelligence
     st.subheader("🏷️ Hashtag & Keyword Intelligence")
-    st.caption("Analisis topik dan tagar yang mendatangkan engagement rata-rata paling tinggi di antara seluruh akun.")
+    st.caption("Analisis topik dan tagar yang ditemukan dalam caption postingan yang berhasil di-scrape.")
 
     hashtag_df = extract_top_hashtags(posts_df, top_n=15)
     
@@ -782,7 +881,7 @@ with tab_content:
                 height=350,
             )
         else:
-            st.info("Belum ada hashtag terdeteksi pada dataset ini.")
+            st.info("Belum ada hashtag terdeteksi pada caption postingan yang di-scrape.")
 
 # Footer
 st.markdown("---")

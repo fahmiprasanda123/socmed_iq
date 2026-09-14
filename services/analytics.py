@@ -2,9 +2,11 @@
 Analytics and mathematical calculations for social media benchmarking.
 Computes KPIs, Engagement Rate (ER), Page Performance Index (PPI),
 Timing matrices, and Content Intelligence.
+All calculations are based strictly on scraped data — no synthetic values.
 """
 
 from __future__ import annotations
+import datetime
 import re
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
@@ -18,7 +20,11 @@ def calculate_ppi(avg_er: float, growth_rate_pct: float) -> float:
     """
     Calculate Page Performance Index (PPI) from 0 to 100.
     Combines normalized engagement rate (60% weight) and follower growth (40% weight).
+    Returns 0.0 if no data is available.
     """
+    if avg_er == 0.0 and growth_rate_pct == 0.0:
+        return 0.0
+
     # Engagement score: 0% ER -> 0, 2.0% ER -> 50, 4.0% ER -> 80, >=5.0% -> 95-100
     er_score = min(100.0, max(0.0, (avg_er / 4.0) * 80.0))
     
@@ -26,28 +32,34 @@ def calculate_ppi(avg_er: float, growth_rate_pct: float) -> float:
     growth_score = min(100.0, max(0.0, 50.0 + (growth_rate_pct * 8.0)))
 
     ppi_val = (0.60 * er_score) + (0.40 * growth_score)
-    return round(float(np.clip(ppi_val, 5.0, 99.0)), 1)
+    return round(float(np.clip(ppi_val, 0.0, 99.0)), 1)
 
 
 def calculate_account_kpis(account_data: Dict[str, Any], days_count: int) -> Dict[str, Any]:
     """
     Calculate comprehensive KPIs for a single account over the specified period.
+    Only uses real scraped data — returns zeros where data is unavailable.
     """
     followers = int(account_data.get("followers", 0))
     growth_rate = float(account_data.get("growth_rate_pct", 0.0))
     posts = account_data.get("posts", [])
-    total_posts = len(posts)
-    posts_per_day = round(total_posts / max(1, days_count), 2)
+    
+    # Only count posts that have real metrics (not estimated/placeholder)
+    real_posts = [p for p in posts if not p.get("is_estimated", False)]
+    total_posts_displayed = len(posts)  # Total scraped posts (for display)
+    total_real_posts = len(real_posts)  # Posts with real metrics (for calculation)
+    
+    posts_per_day = round(total_posts_displayed / max(1, days_count), 2)
 
-    if total_posts == 0 or followers == 0:
+    if total_real_posts == 0 or followers == 0:
         return {
             "handle": account_data.get("handle", ""),
             "display_name": account_data.get("display_name", ""),
             "avatar_url": account_data.get("avatar_url", ""),
             "followers": followers,
             "growth_rate_pct": growth_rate,
-            "total_posts": 0,
-            "posts_per_day": 0.0,
+            "total_posts": total_posts_displayed,
+            "posts_per_day": posts_per_day,
             "total_likes": 0,
             "avg_likes": 0.0,
             "total_comments": 0,
@@ -62,23 +74,24 @@ def calculate_account_kpis(account_data: Dict[str, Any], days_count: int) -> Dic
             "avg_er_views": 0.0,
             "ppi": calculate_ppi(0.0, growth_rate),
             "is_main": account_data.get("is_main", False),
+            "has_real_metrics": False,
         }
 
-    total_likes = sum(p.get("likes", 0) for p in posts)
-    total_comments = sum(p.get("comments", 0) for p in posts)
-    total_shares = sum(p.get("shares", 0) for p in posts)
-    total_saves = sum(p.get("saves", 0) for p in posts)
-    total_views = sum(p.get("views", 0) for p in posts)
+    total_likes = sum(p.get("likes", 0) for p in real_posts)
+    total_comments = sum(p.get("comments", 0) for p in real_posts)
+    total_shares = sum(p.get("shares", 0) for p in real_posts)
+    total_saves = sum(p.get("saves", 0) for p in real_posts)
+    total_views = sum(p.get("views", 0) for p in real_posts)
     total_interactions = total_likes + total_comments + total_shares + total_saves
 
-    avg_likes = total_likes / total_posts
-    avg_comments = total_comments / total_posts
-    avg_shares = total_shares / total_posts
-    avg_saves = total_saves / total_posts
-    avg_interactions = total_interactions / total_posts
+    avg_likes = total_likes / total_real_posts
+    avg_comments = total_comments / total_real_posts
+    avg_shares = total_shares / total_real_posts
+    avg_saves = total_saves / total_real_posts
+    avg_interactions = total_interactions / total_real_posts
 
     # ER by Followers (%)
-    avg_er = (avg_interactions / followers) * 100.0
+    avg_er = (avg_interactions / followers) * 100.0 if followers > 0 else 0.0
     
     # ER by Views (%)
     avg_er_views = (total_interactions / total_views * 100.0) if total_views > 0 else 0.0
@@ -91,7 +104,7 @@ def calculate_account_kpis(account_data: Dict[str, Any], days_count: int) -> Dic
         "avatar_url": account_data.get("avatar_url", ""),
         "followers": followers,
         "growth_rate_pct": growth_rate,
-        "total_posts": total_posts,
+        "total_posts": total_posts_displayed,
         "posts_per_day": posts_per_day,
         "total_likes": total_likes,
         "avg_likes": round(avg_likes, 1),
@@ -107,12 +120,14 @@ def calculate_account_kpis(account_data: Dict[str, Any], days_count: int) -> Dic
         "avg_er_views": round(avg_er_views, 2),
         "ppi": ppi,
         "is_main": account_data.get("is_main", False),
+        "has_real_metrics": True,
     }
 
 
 def build_comparison_matrix(all_accounts_data: List[Dict[str, Any]], days_count: int) -> pd.DataFrame:
     """
     Build the main Benchmark Comparison DataFrame across all profiles.
+    Sorted with main profile first, then by PPI descending.
     """
     rows = []
     for acc in all_accounts_data:
@@ -123,6 +138,7 @@ def build_comparison_matrix(all_accounts_data: List[Dict[str, Any]], days_count:
             "Followers": kpi["followers"],
             "Growth (%)": kpi["growth_rate_pct"],
             "Total Posts": kpi["total_posts"],
+            "Lifetime Posts": int(acc.get("total_posts_lifetime", kpi["total_posts"])),
             "Posts/Day": kpi["posts_per_day"],
             "Avg Likes": int(round(kpi["avg_likes"])),
             "Avg Comments": int(round(kpi["avg_comments"])),
@@ -132,10 +148,18 @@ def build_comparison_matrix(all_accounts_data: List[Dict[str, Any]], days_count:
             "ER (%)": kpi["avg_er"],
             "Is Main": kpi["is_main"],
             "Avatar": kpi["avatar_url"],
+            "Has Real Metrics": kpi.get("has_real_metrics", False),
         })
 
+    if not rows:
+        return pd.DataFrame()
+
     df = pd.DataFrame(rows)
-    # Sort with Main profile on top or by PPI descending
+    # Sort: main account first, then by PPI descending
+    df = df.sort_values(
+        by=["Is Main", "PPI"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
     return df
 
 
@@ -159,11 +183,11 @@ def flatten_all_posts(all_accounts_data: List[Dict[str, Any]]) -> pd.DataFrame:
             dt = None
             if ts:
                 try:
-                    if isinstance(ts, str):
+                    if isinstance(ts, str) and ts:
                         dt = datetime.datetime.fromisoformat(ts)
-                    else:
+                    elif isinstance(ts, datetime.datetime):
                         dt = ts
-                except Exception:
+                except (ValueError, TypeError):
                     dt = None
 
             if "day_of_week" not in p_copy:
@@ -192,27 +216,38 @@ def generate_timing_heatmap_matrix(
     hours = list(range(24))
     grid = pd.DataFrame(0.0, index=DAY_NAMES_ID, columns=hours)
 
+    empty_peak = {"day": "-", "hour": 0, "value": 0.0, "hour_label": "-"}
+
     if posts_df.empty:
-        return grid, {"day": "Senin", "hour": 12, "value": 0.0}
+        return grid, empty_peak
 
     filtered_df = posts_df.copy()
     if target_account and target_account != "All Accounts" and "account" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["account"] == target_account]
 
     if filtered_df.empty:
-        return grid, {"day": "Senin", "hour": 12, "value": 0.0}
+        return grid, empty_peak
 
     # Ensure day_of_week and hour columns exist defensively
     if "day_of_week" not in filtered_df.columns or "hour" not in filtered_df.columns:
         if "timestamp" in filtered_df.columns:
             ts_series = pd.to_datetime(filtered_df["timestamp"], errors="coerce")
+            filtered_df = filtered_df.copy()
             filtered_df["day_of_week"] = ts_series.dt.weekday.fillna(0).astype(int)
             filtered_df["hour"] = ts_series.dt.hour.fillna(12).astype(int)
         else:
-            filtered_df["day_of_week"] = 0
-            filtered_df["hour"] = 12
+            return grid, empty_peak
+
+    # Ensure total_interactions column exists
+    if "total_interactions" not in filtered_df.columns:
+        filtered_df = filtered_df.copy()
+        filtered_df["total_interactions"] = (
+            filtered_df.get("likes", pd.Series(0, index=filtered_df.index)).fillna(0) +
+            filtered_df.get("comments", pd.Series(0, index=filtered_df.index)).fillna(0)
+        )
 
     # Map day_of_week (0=Monday) to Indonesian day name
+    filtered_df = filtered_df.copy()
     filtered_df["day_name_id"] = filtered_df["day_of_week"].apply(
         lambda x: DAY_NAMES_ID[int(x)] if 0 <= int(x) < 7 else "Senin"
     )
@@ -236,8 +271,8 @@ def generate_timing_heatmap_matrix(
 
     # Find peak best slot
     max_val = grid.values.max()
-    peak_day = "Rabu"
-    peak_hour = 19
+    peak_day = "-"
+    peak_hour = 0
     if max_val > 0:
         for d in DAY_NAMES_ID:
             for h in hours:
@@ -245,6 +280,8 @@ def generate_timing_heatmap_matrix(
                     peak_day = d
                     peak_hour = h
                     break
+            if peak_day != "-":
+                break
 
     peak_info = {
         "day": peak_day,
@@ -262,8 +299,21 @@ def analyze_content_formats(posts_df: pd.DataFrame) -> pd.DataFrame:
     if posts_df.empty or "content_type" not in posts_df.columns:
         return pd.DataFrame()
 
+    # Only analyze posts with real metrics
+    df = posts_df.copy()
+    if "is_estimated" in df.columns:
+        df = df[~df["is_estimated"].fillna(False)]
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    # Ensure required columns exist
+    for col in ["post_id", "total_interactions", "likes", "comments", "shares", "post_er"]:
+        if col not in df.columns:
+            df[col] = 0
+
     agg_df = (
-        posts_df.groupby("content_type")
+        df.groupby("content_type")
         .agg(
             total_posts=("post_id", "count"),
             avg_interactions=("total_interactions", "mean"),
@@ -302,7 +352,7 @@ def extract_top_hashtags(posts_df: pd.DataFrame, top_n: int = 15) -> pd.DataFram
 
         for tag in tags:
             tag_clean = tag.strip()
-            if tag_clean:
+            if tag_clean and len(tag_clean) > 1:
                 tag_rows.append({
                     "hashtag": tag_clean,
                     "interactions": interactions,

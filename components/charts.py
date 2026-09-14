@@ -27,6 +27,26 @@ COLOR_TEXT = "#E2E8F0"
 PALETTE = [COLOR_MAIN, COLOR_ACCENT1, COLOR_ACCENT2, COLOR_ACCENT3, COLOR_ACCENT4, "#8B5CF6", "#F97316"]
 
 
+def _empty_figure(message: str = "Data tidak tersedia", height: int = 350) -> go.Figure:
+    """Create a styled empty figure with a message."""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper", yref="paper",
+        x=0.5, y=0.5,
+        showarrow=False,
+        font=dict(size=16, color="#94A3B8"),
+    )
+    fig.update_layout(
+        plot_bgcolor="rgba(15, 23, 42, 0.6)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        height=height,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+    )
+    return fig
+
+
 def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> go.Figure:
     """
     Create 4-Quadrant Scatter Plot:
@@ -37,19 +57,22 @@ def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> g
     """
     df = comparison_df.copy()
     if df.empty:
-        fig = go.Figure()
-        fig.update_layout(title="No data available for quadrant plot")
-        return fig
+        return _empty_figure("Tidak ada data untuk quadrant plot")
+
+    # Filter out accounts with 0 posts/day and 0 ER for meaningful quadrant
+    plot_df = df[(df["Posts/Day"] > 0) | (df["ER (%)"] > 0)].copy()
+    if plot_df.empty:
+        return _empty_figure("Belum ada data posting untuk membuat quadrant plot")
 
     # Calculate median benchmarks
-    x_med = float(df["Posts/Day"].median()) if not df["Posts/Day"].empty else 1.0
-    y_med = float(df["ER (%)"].median()) if not df["ER (%)"].empty else 2.0
+    x_med = float(plot_df["Posts/Day"].median()) if not plot_df["Posts/Day"].empty else 1.0
+    y_med = float(plot_df["ER (%)"].median()) if not plot_df["ER (%)"].empty else 2.0
 
     # Ensure minimum range for quadrant visualization
-    x_min = max(0, df["Posts/Day"].min() * 0.7)
-    x_max = df["Posts/Day"].max() * 1.3
-    y_min = max(0, df["ER (%)"].min() * 0.7)
-    y_max = df["ER (%)"].max() * 1.35
+    x_min = max(0, plot_df["Posts/Day"].min() * 0.7)
+    x_max = plot_df["Posts/Day"].max() * 1.3
+    y_min = max(0, plot_df["ER (%)"].min() * 0.7)
+    y_max = plot_df["ER (%)"].max() * 1.35
 
     if x_max <= x_min:
         x_max = x_min + 2.0
@@ -57,14 +80,13 @@ def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> g
         y_max = y_min + 3.0
 
     # Bubble sizing reference
-    max_followers = max(1, df["Followers"].max())
-    df["bubble_size"] = np.sqrt(df["Followers"] / max_followers) * 38 + 14
+    max_followers = max(1, plot_df["Followers"].max())
+    plot_df["bubble_size"] = np.sqrt(plot_df["Followers"] / max_followers) * 38 + 14
 
     fig = go.Figure()
 
     # Add quadrant background tint / labels via annotations
     quadrant_annotations = [
-        # Top-Left: High Efficiency / Niche Performers
         dict(
             x=x_min + (x_med - x_min) * 0.5,
             y=y_max * 0.94,
@@ -74,7 +96,6 @@ def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> g
             align="center",
             opacity=0.7,
         ),
-        # Top-Right: Powerhouses
         dict(
             x=x_med + (x_max - x_med) * 0.5,
             y=y_max * 0.94,
@@ -84,7 +105,6 @@ def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> g
             align="center",
             opacity=0.7,
         ),
-        # Bottom-Left: Low Impact
         dict(
             x=x_min + (x_med - x_min) * 0.5,
             y=y_min + (y_med - y_min) * 0.25,
@@ -94,7 +114,6 @@ def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> g
             align="center",
             opacity=0.7,
         ),
-        # Bottom-Right: Spamming / Over-posting
         dict(
             x=x_med + (x_max - x_med) * 0.5,
             y=y_min + (y_med - y_min) * 0.25,
@@ -106,10 +125,10 @@ def create_quadrant_scatter(comparison_df: pd.DataFrame, main_account: str) -> g
         ),
     ]
 
-    # Plot each account bubble
-    for idx, row in df.iterrows():
-        is_main = row["Is Main"]
-        color = COLOR_MAIN if is_main else PALETTE[(idx + 1) % len(PALETTE)]
+    # Plot each account bubble — use enumerate for consistent sequential indexing
+    for seq_idx, (_, row) in enumerate(plot_df.iterrows()):
+        is_main = bool(row["Is Main"])
+        color = COLOR_MAIN if is_main else PALETTE[(seq_idx + 1) % len(PALETTE)]
         border_color = "#FFFFFF" if is_main else "rgba(255,255,255,0.4)"
         border_width = 2.5 if is_main else 1.5
 
@@ -211,6 +230,9 @@ def create_timing_heatmap(
     """
     Create 7 Days x 24 Hours interactive heatmap with highlight on peak best slot.
     """
+    if heatmap_df.empty:
+        return _empty_figure("Tidak ada data timing untuk heatmap")
+
     days = heatmap_df.index.tolist()
     hours = [f"{h:02d}:00" for h in heatmap_df.columns]
     z_values = heatmap_df.values
@@ -294,11 +316,11 @@ def create_format_performance_bar(format_df: pd.DataFrame) -> go.Figure:
     Create grouped bar chart comparing performance across content formats.
     """
     if format_df.empty:
-        fig = go.Figure()
-        fig.update_layout(title="No content format data available")
-        return fig
+        return _empty_figure("Belum ada data format konten. Metrik post belum tersedia dari scraping.", height=380)
 
     fig = go.Figure()
+
+    colors = ["#6366F1", "#06B6D4", "#10B981", "#F59E0B", "#EC4899"]
 
     fig.add_trace(
         go.Bar(
@@ -306,7 +328,7 @@ def create_format_performance_bar(format_df: pd.DataFrame) -> go.Figure:
             x=format_df["content_type"],
             y=format_df["avg_interactions"],
             marker=dict(
-                color=["#6366F1", "#06B6D4", "#10B981"][: len(format_df)],
+                color=colors[: len(format_df)],
                 line=dict(color="rgba(255,255,255,0.2)", width=1),
             ),
             text=[format_number(v) for v in format_df["avg_interactions"]],
@@ -369,9 +391,7 @@ def create_hashtag_bar(hashtag_df: pd.DataFrame) -> go.Figure:
     Create horizontal bar chart of top hashtags sorted by engagement.
     """
     if hashtag_df.empty:
-        fig = go.Figure()
-        fig.update_layout(title="No hashtag data available")
-        return fig
+        return _empty_figure("Belum ada hashtag terdeteksi dari caption postingan.", height=400)
 
     # Reverse order so highest engagement is at top
     df_sorted = hashtag_df.sort_values(by="avg_interactions", ascending=True)
@@ -415,6 +435,7 @@ def create_follower_growth_chart(all_accounts_data: List[Dict[str, Any]]) -> go.
     Create multi-line follower growth trajectory over the analyzed period.
     """
     fig = go.Figure()
+    has_data = False
 
     for idx, acc in enumerate(all_accounts_data):
         history = acc.get("historical_followers", [])
@@ -427,6 +448,7 @@ def create_follower_growth_chart(all_accounts_data: List[Dict[str, Any]]) -> go.
         
         color = COLOR_MAIN if is_main else PALETTE[(idx + 1) % len(PALETTE)]
         width = 3.5 if is_main else 1.8
+        has_data = True
 
         fig.add_trace(
             go.Scatter(
@@ -439,6 +461,9 @@ def create_follower_growth_chart(all_accounts_data: List[Dict[str, Any]]) -> go.
                 hovertemplate=f"<b>@{acc['handle']}</b><br>Tanggal: %{{x}}<br>Followers: %{{y:,.0f}}<extra></extra>",
             )
         )
+
+    if not has_data:
+        return _empty_figure("Tidak ada data follower untuk ditampilkan")
 
     fig.update_layout(
         title=dict(
