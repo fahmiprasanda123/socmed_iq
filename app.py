@@ -12,20 +12,70 @@ from typing import Any, Dict, List
 import pandas as pd
 import streamlit as st
 
-from components.charts import (
-    create_follower_growth_chart,
-    create_format_performance_bar,
-    create_hashtag_bar,
-    create_quadrant_scatter,
-    create_timing_heatmap,
-)
-from services.analytics import (
-    analyze_content_formats,
-    build_comparison_matrix,
-    extract_top_hashtags,
-    flatten_all_posts,
-    generate_timing_heatmap_matrix,
-)
+import importlib
+
+import components.charts
+try:
+    importlib.reload(components.charts)
+except Exception:
+    pass
+
+try:
+    from components.charts import (
+        create_follower_growth_chart,
+        create_format_performance_bar,
+        create_hashtag_bar,
+        create_quadrant_scatter,
+        create_timing_heatmap,
+        create_wordcloud_figure,
+    )
+except ImportError:
+    from components.charts import (
+        create_follower_growth_chart,
+        create_format_performance_bar,
+        create_hashtag_bar,
+        create_quadrant_scatter,
+        create_timing_heatmap,
+    )
+    def create_wordcloud_figure(frequencies, *args, **kwargs):
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(9, 4.2), facecolor="#0B1120")
+        ax.text(0.5, 0.5, "Silakan Rerun aplikasi untuk memuat WordCloud", color="#94A3B8", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+import services.analytics
+try:
+    importlib.reload(services.analytics)
+except Exception:
+    pass
+
+try:
+    from services.analytics import (
+        analyze_content_formats,
+        build_comparison_matrix,
+        extract_top_hashtags,
+        flatten_all_posts,
+        generate_timing_heatmap_matrix,
+        generate_wordcloud_frequencies,
+    )
+except ImportError:
+    from services.analytics import (
+        analyze_content_formats,
+        build_comparison_matrix,
+        extract_top_hashtags,
+        flatten_all_posts,
+        generate_timing_heatmap_matrix,
+    )
+    def generate_wordcloud_frequencies(*args, **kwargs):
+        return {}
+
+import services.data_fetcher
+try:
+    importlib.reload(services.data_fetcher)
+except Exception:
+    pass
+
 from services.data_fetcher import LiveWebScraperService, _generate_dynamic_account_card
 from services.storage import storage_service
 from utils.helpers import (
@@ -925,38 +975,37 @@ with tab_content:
                 post_url = post_row.get("post_url", "#")
                 safe_post_url = post_url if _is_safe_url(post_url) else "#"
 
-                # Show estimation notice if metrics are estimated
                 is_estimated = post_row.get("is_estimated", False)
-                estimation_badge = "<span style='font-size:0.65rem; color:#F59E0B; margin-left:4px;'>⚠️ Metrik tidak tersedia</span>" if is_estimated else ""
+                estimation_badge_html = f"<div style='font-size:0.65rem; color:#F59E0B; margin-top:4px;'>⚠️ Metrik tidak tersedia</div>" if is_estimated else ""
 
-                st.markdown(
-                    f"""
-                    <div class="post-card">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                            <div style="display:flex; align-items:center; gap:6px;">
-                                {handle_badge}
-                                <span style="font-size:0.7rem; color:#A5B4FC; background:rgba(99,102,241,0.18); border:1px solid rgba(99,102,241,0.35); padding:2px 7px; border-radius:10px; font-weight:600;">{fmt_badge}</span>
-                            </div>
-                            <span style="font-size:0.75rem; color:#94A3B8;">{post_date_display}</span>
-                        </div>
-                        <img src="{safe_thumb}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='{safe_fallback}';" style="width:100%; height:165px; object-fit:cover; border-radius:8px; margin-bottom:10px;" />
-                        <div style="font-size:0.83rem; color:#E2E8F0; line-height:1.45; margin-bottom:12px; min-height:56px;">
-                            {caption_text}
-                        </div>
-                        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; background:rgba(30,41,59,0.55); padding:8px 10px; border-radius:8px;">
-                            <span>❤️ <b>{format_number(post_row['likes'])}</b></span>
-                            <span>💬 <b>{format_number(post_row['comments'])}</b></span>
-                            <span>🔁 <b>{format_number(post_row['shares'])}</b></span>
-                            <span style="color:#10B981; font-weight:700;">⚡ {post_row['post_er']:.2f}%</span>
-                        </div>
-                        {estimation_badge}
-                        <div style="margin-top:10px; text-align:right;">
-                            <a href="{safe_post_url}" target="_blank" style="font-size:0.78rem; color:#818CF8; text-decoration:none; font-weight:600;">Lihat Postingan Asli ↗</a>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                card_html = (
+                    f'<div class="post-card">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">'
+                    f'<div style="display:flex; align-items:center; gap:6px;">'
+                    f'{handle_badge}'
+                    f'<span style="font-size:0.7rem; color:#A5B4FC; background:rgba(99,102,241,0.18); border:1px solid rgba(99,102,241,0.35); padding:2px 7px; border-radius:10px; font-weight:600;">{fmt_badge}</span>'
+                    f'</div>'
+                    f'<span style="font-size:0.75rem; color:#94A3B8;">{post_date_display}</span>'
+                    f'</div>'
+                    f'<img src="{safe_thumb}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src=\'{safe_fallback}\';" style="width:100%; height:165px; object-fit:cover; border-radius:8px; margin-bottom:10px;" />'
+                    f'<div style="font-size:0.83rem; color:#E2E8F0; line-height:1.45; margin-bottom:12px; min-height:56px;">{caption_text}</div>'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; background:rgba(30,41,59,0.55); padding:8px 10px; border-radius:8px;">'
+                    f'<span>❤️ <b>{format_number(post_row["likes"])}</b></span>'
+                    f'<span>💬 <b>{format_number(post_row["comments"])}</b></span>'
+                    f'<span>🔁 <b>{format_number(post_row["shares"])}</b></span>'
+                    f'<span style="color:#10B981; font-weight:700;">⚡ {post_row["post_er"]:.2f}%</span>'
+                    f'</div>'
+                    f'{estimation_badge_html}'
+                    f'<div style="margin-top:10px; text-align:right;">'
+                    f'<a href="{safe_post_url}" target="_blank" style="font-size:0.78rem; color:#818CF8; text-decoration:none; font-weight:600;">Lihat Postingan Asli ↗</a>'
+                    f'</div>'
+                    f'</div>'
                 )
+
+                if hasattr(st, "html"):
+                    st.html(card_html)
+                else:
+                    st.markdown(card_html, unsafe_allow_html=True)
     else:
         st.info("Tidak ada data postingan yang cocok dengan kriteria filter.")
 
@@ -993,6 +1042,59 @@ with tab_content:
             )
         else:
             st.info("Belum ada hashtag terdeteksi pada caption postingan yang di-scrape.")
+
+    st.markdown("---")
+
+    # 4. WordCloud Keyword & Topic Exploration
+    st.subheader("☁️ WordCloud Topic & Keyword Visualizer")
+    st.caption("Visualisasi frekuensi kata kunci dan topik dari caption postingan serta tagar yang digunakan.")
+
+    col_wc_mode, col_wc_acc, col_wc_theme = st.columns([2, 2, 2])
+    with col_wc_mode:
+        wc_mode = st.radio(
+            "Sumber Kata WordCloud",
+            ["Kata Kunci Caption", "Tagar (#Hashtag)"],
+            horizontal=True,
+            key="wc_mode_select",
+        )
+    with col_wc_acc:
+        wc_account = st.selectbox(
+            "Filter Akun",
+            ["All Profiles"] + [acc["handle"] for acc in accounts_data if not acc.get("not_found")],
+            key="wc_account_filter",
+        )
+    with col_wc_theme:
+        wc_colormap = st.selectbox(
+            "Palet Warna",
+            ["coolwarm", "plasma", "viridis", "mako", "Spectral", "Blues"],
+            index=0,
+            key="wc_colormap_select",
+        )
+
+    wc_mode_val = "hashtag" if "Hashtag" in wc_mode else "caption"
+    frequencies = generate_wordcloud_frequencies(
+        posts_df=posts_df,
+        target_account=wc_account,
+        mode=wc_mode_val,
+        max_words=100,
+    )
+
+    if frequencies:
+        fig_wc = create_wordcloud_figure(frequencies, colormap=wc_colormap, background_color="#0B1120")
+        st.pyplot(fig_wc, use_container_width=True)
+
+        # Show Top Keywords / Hashtags chip pills below WordCloud
+        top_words = list(frequencies.items())[:12]
+        chips_html = "".join([
+            f"<span style='display:inline-block; background:rgba(99,102,241,0.18); border:1px solid rgba(99,102,241,0.35); color:#E0E7FF; padding:4px 10px; border-radius:12px; margin:3px 4px; font-size:0.78rem;'><b>{word}</b>: {count}x</span>"
+            for word, count in top_words
+        ])
+        st.markdown(
+            f"<div style='margin-top:10px; text-align:center;'>{chips_html}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Belum ada data kata kunci atau tagar yang cukup dari postingan yang di-scrape untuk menghasilkan WordCloud.")
 
 # Footer
 st.markdown("---")

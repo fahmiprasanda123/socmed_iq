@@ -221,6 +221,7 @@ class LiveWebScraperService(BaseDataService):
         except Exception:
             pass
 
+        self.proxy = proxy
         if proxy:
             self.session.proxies = {
                 "http": proxy,
@@ -376,15 +377,20 @@ class LiveWebScraperService(BaseDataService):
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-extensions",
+                "--virtual-time-budget=6000",
+                f"--user-agent={self.DEFAULT_UA}",
                 "--dump-dom",
-                url,
             ]
+            if getattr(self, "proxy", None):
+                cmd.append(f"--proxy-server={self.proxy}")
+            cmd.append(url)
+
             with open(tmp_path, "w", encoding="utf-8") as outfile:
                 res = subprocess.run(
                     cmd,
                     stdout=outfile,
                     stderr=subprocess.PIPE,
-                    timeout=8,
+                    timeout=25,
                 )
             if res.returncode != 0:
                 stderr_text = ""
@@ -435,41 +441,98 @@ class LiveWebScraperService(BaseDataService):
                 if "on Instagram:" in c:
                     bio = c.split("on Instagram:", 1)[1].strip().strip('"')
 
-            # 2. Extract Real Posts with Authentic CDN Thumbnails and Shortcodes
-            links = soup.find_all("a", href=True)
+            # 2. Extract Real Posts: Primary extraction from Relay Preloader JSON (polaris_ordered_timeline_connection)
             seen_codes = set()
             raw_posts = []
-            for a in links:
-                href = a.get("href", "")
-                m = re.search(r"/(?:p|reel)/([A-Za-z0-9_-]+)", href)
-                if not m:
-                    continue
-                code = m.group(1)
-                if code in seen_codes:
-                    continue
 
-                # If the link has an account prefix, verify it belongs to handle
-                m_owner = re.search(r"^/([^/]+)/(?:p|reel)/", href)
-                if m_owner:
-                    owner = m_owner.group(1).lower()
-                    if owner != handle.lower() and owner not in ["p", "reel"]:
+            try:
+                idx_timeline = html_content.find("polaris_ordered_timeline_connection")
+                if idx_timeline != -1:
+                    start_s = html_content.rfind("<script", 0, idx_timeline)
+                    end_s = html_content.find("</script>", idx_timeline)
+                    if start_s != -1 and end_s != -1:
+                        script_body = html_content[start_s:end_s].split(">", 1)[1]
+                        relay_json = json.loads(script_body)
+
+                        def _extract_timeline_edges(obj):
+                            if isinstance(obj, dict):
+                                if "polaris_ordered_timeline_connection" in obj:
+                                    return obj["polaris_ordered_timeline_connection"].get("edges", [])
+                                for v in obj.values():
+                                    res = _extract_timeline_edges(v)
+                                    if res:
+                                        return res
+                            elif isinstance(obj, list):
+                                for item in obj:
+                                    res = _extract_timeline_edges(item)
+                                    if res:
+                                        return res
+                            return []
+
+                        edges = _extract_timeline_edges(relay_json)
+                        for edge in edges:
+                            node = edge.get("node", {})
+                            code = node.get("code")
+                            if code and code not in seen_codes:
+                                seen_codes.add(code)
+                                cap_data = node.get("caption")
+                                cap_text = ""
+                                if isinstance(cap_data, dict):
+                                    cap_text = cap_data.get("text", "")
+                                elif isinstance(cap_data, str):
+                                    cap_text = cap_data
+
+                                typename = node.get("__typename", "")
+                                content_type = (
+                                    "Carousel"
+                                    if "Carousel" in typename
+                                    else ("Reels/Video" if ("Video" in typename or "Clip" in typename) else "Single Image")
+                                )
+                                raw_posts.append({
+                                    "shortcode": code,
+                                    "post_url": f"https://www.instagram.com/p/{code}/",
+                                    "thumbnail_url": node.get("display_uri") or "",
+                                    "alt": node.get("accessibility_caption") or "",
+                                    "caption": cap_text,
+                                    "content_type": content_type,
+                                })
+            except Exception as e_json:
+                logger.debug("Error parsing polaris timeline JSON: %s", e_json)
+
+            # Secondary fallback: Extract from standard <a> anchor tags in rendered DOM
+            if not raw_posts:
+                links = soup.find_all("a", href=True)
+                for a in links:
+                    href = a.get("href", "")
+                    m = re.search(r"/(?:p|reel)/([A-Za-z0-9_-]+)", href)
+                    if not m:
+                        continue
+                    code = m.group(1)
+                    if code in seen_codes:
                         continue
 
-                seen_codes.add(code)
+                    # If the link has an account prefix, verify it belongs to handle
+                    m_owner = re.search(r"^/([^/]+)/(?:p|reel)/", href)
+                    if m_owner:
+                        owner = m_owner.group(1).lower()
+                        if owner != handle.lower() and owner not in ["p", "reel"]:
+                            continue
 
-                img = a.find("img")
-                img_src = img.get("src", "") if img else ""
-                img_alt = img.get("alt", "") if img else ""
+                    seen_codes.add(code)
 
-                if not img_src:
-                    continue
+                    img = a.find("img")
+                    img_src = img.get("src", "") if img else ""
+                    img_alt = img.get("alt", "") if img else ""
 
-                raw_posts.append({
-                    "shortcode": code,
-                    "post_url": f"https://www.instagram.com/p/{code}/",
-                    "thumbnail_url": img_src,
-                    "alt": img_alt,
-                })
+                    if not img_src:
+                        continue
+
+                    raw_posts.append({
+                        "shortcode": code,
+                        "post_url": f"https://www.instagram.com/p/{code}/",
+                        "thumbnail_url": img_src,
+                        "alt": img_alt,
+                    })
 
             return {
                 "success": True,
@@ -484,6 +547,7 @@ class LiveWebScraperService(BaseDataService):
             }
         except subprocess.TimeoutExpired:
             logger.warning("Chrome timed out for @%s", handle)
+            return None
             return None
         except Exception as e:
             logger.error("Chrome scraping error for @%s: %s", handle, e, exc_info=True)
@@ -547,11 +611,11 @@ class LiveWebScraperService(BaseDataService):
         """
         url = f"https://www.instagram.com/p/{shortcode}/"
         headers = {
-            "User-Agent": self.DEFAULT_UA,
+            "User-Agent": self.CRAWLER_UA,
             "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
         }
         try:
-            r = self.session.get(url, headers=headers, timeout=8)
+            r = self.session.get(url, headers=headers, timeout=12)
             if r.status_code != 200:
                 return None
             soup = BeautifulSoup(r.text, "html.parser")
@@ -562,6 +626,7 @@ class LiveWebScraperService(BaseDataService):
 
             likes = 0
             comments = 0
+            views = 0
             date_str = ""
             post_dt = None
             caption = ""
@@ -575,6 +640,11 @@ class LiveWebScraperService(BaseDataService):
             m_comm = re.search(r"([\d,\.kmKM]+)\s+comments?", desc, re.I)
             if m_comm:
                 comments = self._parse_compact_number(m_comm.group(1))
+
+            # Check for views count: e.g. "12.5k views"
+            m_views = re.search(r"([\d,\.kmKM]+)\s+views?", desc, re.I)
+            if m_views:
+                views = self._parse_compact_number(m_views.group(1))
 
             # Extract date: e.g. "on September 8, 2026"
             m_date = re.search(r"on\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", desc, re.I)
@@ -606,8 +676,10 @@ class LiveWebScraperService(BaseDataService):
                         caption = t_content.split(":", 1)[1].strip(' ".\r\n')
 
             return {
+                "success": True,
                 "likes": likes,
                 "comments": comments,
+                "views": views,
                 "date_str": date_str,
                 "post_dt": post_dt,
                 "caption": caption,
@@ -845,10 +917,21 @@ class LiveWebScraperService(BaseDataService):
                     post_dt = alt_dt
                 if not date_str:
                     date_str = alt_date_str
+
+                # Prioritize scraped caption from relay/polaris or crawler metadata
+                if not caption and r_post.get("caption"):
+                    caption = r_post["caption"]
                 if not caption:
                     caption = alt_caption
                 if not caption:
                     caption = "Caption tidak tersedia."
+
+                # Prioritize explicit content_type detected from relay media
+                if r_post.get("content_type"):
+                    content_type = r_post["content_type"]
+
+                # Extract hashtags directly from caption
+                hashtags = re.findall(r"#\w+", caption) if caption else []
 
                 # Determine if post falls within date range
                 in_date_range = True
@@ -859,19 +942,28 @@ class LiveWebScraperService(BaseDataService):
                 is_reel = "reel" in content_type.lower() or "video" in content_type.lower()
 
                 # Use REAL metrics if available from Instagram
-                if real_meta and (real_meta.get("likes", 0) > 0 or real_meta.get("comments", 0) > 0):
-                    likes = real_meta["likes"]
-                    comments = real_meta["comments"]
+                if real_meta and real_meta.get("success", False):
+                    likes = real_meta.get("likes", 0)
+                    comments = real_meta.get("comments", 0)
+                    views = real_meta.get("views", 0)
                     has_real_post_metrics = True
-                    # Shares/saves are not exposed by Instagram OG — set to 0
                     shares = 0
                     saves = 0
                     total_inter = likes + comments
                     post_er = round((total_inter / max(1, followers)) * 100.0, 2) if followers > 0 else 0.0
-                    views = 0  # Not available from OG tags
+                    is_estimated = False
+                elif real_meta and (real_meta.get("likes", 0) > 0 or real_meta.get("comments", 0) > 0):
+                    likes = real_meta["likes"]
+                    comments = real_meta["comments"]
+                    views = real_meta.get("views", 0)
+                    has_real_post_metrics = True
+                    shares = 0
+                    saves = 0
+                    total_inter = likes + comments
+                    post_er = round((total_inter / max(1, followers)) * 100.0, 2) if followers > 0 else 0.0
                     is_estimated = False
                 else:
-                    # No real metrics available — set to 0 and flag
+                    # No real metrics available — set to 0 and flag as estimated
                     likes = 0
                     comments = 0
                     shares = 0
@@ -890,6 +982,7 @@ class LiveWebScraperService(BaseDataService):
                     "hour": post_dt.hour if post_dt else 12,
                     "content_type": content_type,
                     "caption": caption,
+                    "hashtags": hashtags,
                     "likes": likes,
                     "comments": comments,
                     "shares": shares,
@@ -897,8 +990,8 @@ class LiveWebScraperService(BaseDataService):
                     "views": views,
                     "total_interactions": total_inter,
                     "post_er": post_er,
-                    "thumbnail_url": r_post["thumbnail_url"],
-                    "post_url": r_post["post_url"],
+                    "thumbnail_url": r_post.get("thumbnail_url", ""),
+                    "post_url": r_post.get("post_url", f"https://www.instagram.com/p/{shortcode}/"),
                     "is_estimated": is_estimated,
                     "in_date_range": in_date_range,
                 }

@@ -300,21 +300,21 @@ def analyze_content_formats(posts_df: pd.DataFrame) -> pd.DataFrame:
     if posts_df.empty or "content_type" not in posts_df.columns:
         return pd.DataFrame()
 
-    # Only analyze posts with real metrics
+    # Prioritize posts with real metrics, fallback to all posts if only formats exist
     df = posts_df.copy()
-    if "is_estimated" in df.columns:
-        df = df[~df["is_estimated"].fillna(False)]
-    
-    if df.empty:
+    real_df = df[~df["is_estimated"].fillna(False)] if "is_estimated" in df.columns else df
+    target_df = real_df if not real_df.empty else df
+
+    if target_df.empty:
         return pd.DataFrame()
 
     # Ensure required columns exist
     for col in ["post_id", "total_interactions", "likes", "comments", "shares", "post_er"]:
-        if col not in df.columns:
-            df[col] = 0
+        if col not in target_df.columns:
+            target_df[col] = 0
 
     agg_df = (
-        df.groupby("content_type")
+        target_df.groupby("content_type")
         .agg(
             total_posts=("post_id", "count"),
             avg_interactions=("total_interactions", "mean"),
@@ -379,3 +379,92 @@ def extract_top_hashtags(posts_df: pd.DataFrame, top_n: int = 15) -> pd.DataFram
     summary["avg_er"] = summary["avg_er"].round(2)
     summary = summary.sort_values(by="avg_interactions", ascending=False).head(top_n)
     return summary
+
+
+def generate_wordcloud_frequencies(
+    posts_df: pd.DataFrame,
+    target_account: Optional[str] = None,
+    mode: str = "caption",
+    max_words: int = 120,
+) -> Dict[str, int]:
+    """
+    Generates cleaned word or hashtag frequencies for WordCloud visualization.
+    Filters out Indonesian & English stopwords, symbols, handles, and URLs.
+    """
+    if posts_df.empty:
+        return {}
+
+    df = posts_df.copy()
+    if target_account and target_account != "All Profiles" and "account" in df.columns:
+        df = df[df["account"] == target_account]
+
+    if df.empty:
+        return {}
+
+    from collections import Counter
+
+    if mode == "hashtag":
+        tags_list = []
+        for _, row in df.iterrows():
+            tags = row.get("hashtags", [])
+            if not tags and isinstance(row.get("caption"), str):
+                tags = re.findall(r"#\w+", row["caption"])
+            for t in tags:
+                clean_t = t.strip()
+                if clean_t and len(clean_t) > 1:
+                    tags_list.append(clean_t if clean_t.startswith("#") else f"#{clean_t}")
+        if not tags_list:
+            return {}
+        counts = Counter(tags_list)
+        return dict(counts.most_common(max_words))
+
+    # Mode == "caption" (Keyword analysis)
+    id_stopwords = {
+        "yang", "di", "dan", "untuk", "ini", "dari", "ke", "dalam", "bisa", "pada", "oleh",
+        "adalah", "dengan", "akan", "juga", "atau", "link", "bio", "bites", "news", "kamu",
+        "kita", "mereka", "anda", "saya", "kami", "itu", "ada", "karena", "agar", "supaya",
+        "jika", "kalau", "bukan", "tidak", "tak", "tapi", "tetapi", "namun", "saat", "ketika",
+        "sudah", "telah", "sedang", "lagi", "lebih", "sangat", "paling", "banyak", "sedikit",
+        "semua", "setiap", "lain", "baru", "lama", "dapat", "mau", "ingin", "harus", "wajib",
+        "boleh", "jadi", "menjadi", "secara", "tentang", "seperti", "sebagai", "antara", "hingga",
+        "sampai", "terhadap", "terus", "masih", "belum", "hanya", "saja", "pun", "kah", "lah",
+        "dong", "deh", "yuk", "klik", "cek", "info", "lengkap", "artikel", "baca", "website",
+        "simak", "geser", "swipe", "post", "postingan", "foto", "video", "buat", "hari", "tahun",
+        "bulan", "minggu", "jam", "menit", "detik", "orang", "hal", "cara", "satu", "dua", "tiga",
+    }
+    en_stopwords = {
+        "the", "in", "to", "of", "and", "a", "for", "is", "on", "at", "as", "with", "from",
+        "by", "an", "be", "this", "that", "it", "are", "was", "were", "or", "have", "has",
+        "had", "not", "but", "what", "all", "we", "when", "your", "can", "said", "there",
+        "use", "each", "which", "she", "he", "do", "how", "their", "if", "will", "up",
+        "other", "about", "out", "many", "then", "them", "these", "so", "some", "her",
+        "would", "make", "like", "him", "into", "time", "look", "two", "more", "go",
+        "see", "no", "way", "could", "my", "than", "first", "been", "call", "who",
+        "its", "now", "find", "long", "down", "day", "did", "get", "come", "made",
+        "may", "part", "read", "click", "new", "our", "one", "over", "just", "also",
+    }
+    all_stopwords = id_stopwords | en_stopwords
+
+    words_list = []
+    for _, row in df.iterrows():
+        caption = row.get("caption")
+        if not isinstance(caption, str) or not caption or caption == "Caption tidak tersedia.":
+            continue
+        # Remove URLs
+        text = re.sub(r"https?://\S+|www\.\S+", "", caption)
+        # Remove handles
+        text = re.sub(r"@\w+", "", text)
+        # Remove hashtags
+        text = re.sub(r"#\w+", "", text)
+        # Tokenize alphanumeric words (at least 3 characters)
+        tokens = re.findall(r"\b[A-Za-z]{3,}\b", text.lower())
+        for token in tokens:
+            if token not in all_stopwords and len(token) > 2:
+                words_list.append(token.capitalize())
+
+    if not words_list:
+        return {}
+
+    counts = Counter(words_list)
+    return dict(counts.most_common(max_words))
+

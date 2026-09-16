@@ -492,3 +492,50 @@ def create_follower_growth_chart(all_accounts_data: List[Dict[str, Any]]) -> go.
     )
 
     return fig
+
+
+def create_wordcloud_figure(
+    frequencies: Dict[str, int],
+    colormap: str = "coolwarm",
+    background_color: str = "#0B1120",
+    width: int = 900,
+    height: int = 420,
+):
+    """
+    Generates a matplotlib Figure containing a beautifully rendered WordCloud.
+    Matches the dark aesthetic of the application.
+    """
+    import matplotlib.pyplot as plt
+    try:
+        from wordcloud import WordCloud
+    except ImportError:
+        fig, ax = plt.subplots(figsize=(width / 100, height / 100), facecolor=background_color)
+        ax.text(0.5, 0.5, "Library wordcloud belum terpasang", color="#94A3B8", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    if not frequencies:
+        fig, ax = plt.subplots(figsize=(width / 100, height / 100), facecolor=background_color)
+        ax.text(0.5, 0.5, "Belum ada kata kunci / tagar yang terdeteksi untuk WordCloud", color="#94A3B8", ha="center", va="center", fontsize=12)
+        ax.axis("off")
+        return fig
+
+    wc = WordCloud(
+        width=width,
+        height=height,
+        background_color=background_color,
+        colormap=colormap,
+        prefer_horizontal=0.85,
+        max_words=100,
+        min_font_size=10,
+        max_font_size=75,
+        random_state=42,
+        collocations=False,
+    ).generate_from_frequencies(frequencies)
+
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), facecolor=background_color, dpi=120)
+    ax.imshow(wc, interpolation="bilinear")
+    ax.axis("off")
+    plt.tight_layout(pad=0)
+    return fig
+
