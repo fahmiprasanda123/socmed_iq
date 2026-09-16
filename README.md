@@ -92,6 +92,21 @@ Terima kasih banyak atas apresiasi dan dukungannya! 🙏✨
 
 ---
 
+## 🌐 Catatan Deployment ke Streamlit Cloud (Production)
+
+> **Kenapa scraping berhasil di laptop lokal tapi gagal di Streamlit Cloud?**
+>
+> 1. **Pemblokiran IP Data Center (AWS/Cloud):** Server Streamlit Community Cloud berjalan di atas infrastruktur publik AWS. Meta (Instagram) secara otomatis memblokir atau me-redirect request dari IP data center ke halaman login (`HTTP 302/429/403`). Di laptop lokal, scraping berhasil lancar karena menggunakan IP residential (ISP rumahan/seluler).
+> 2. **Solusi Praktis & Rekomendasi:**
+>    - **Metode 1 (Export & Import Data Historis - Paling Praktis):** Jalankan scraping atau tracker harian di lokal (`track_daily.py`), buka menu **📁 Manajemen Data Historis** di dashboard lokal, unduh database (`.db`) atau export CSV, lalu upload ke dashboard Streamlit Cloud Anda.
+>    - **Metode 2 (Gunakan Proxy):** Masukkan proxy residensial pada menu **Settings &rarr; Secrets** di Streamlit Cloud:
+>      ```toml
+>      PROXY_URL = "http://username:password@proxy-ip:port"
+>      ```
+>    - **Metode 3 (Self-Hosting dengan Cloudflare Tunnel / Ngrok):** Jalankan dashboard di komputer lokal Anda, lalu ekspos menggunakan Cloudflare Tunnel gratis untuk mendapatkan domain publik tanpa risiko blokir IP server.
+
+---
+
 ## ⚠️ Catatan & Disclaimer
 
 - Data yang diambil bersumber dari profil publik yang dapat diakses secara terbuka tanpa login akun pengguna.

@@ -212,6 +212,21 @@ class LiveWebScraperService(BaseDataService):
             "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
+        # Check for proxy configuration from environment or Streamlit Secrets
+        proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        try:
+            import streamlit as _st
+            if not proxy and hasattr(_st, "secrets") and "PROXY_URL" in _st.secrets:
+                proxy = str(_st.secrets["PROXY_URL"]).strip()
+        except Exception:
+            pass
+
+        if proxy:
+            self.session.proxies = {
+                "http": proxy,
+                "https": proxy,
+            }
+            logger.info("LiveWebScraperService initialized with proxy: %s", proxy.split("@")[-1])
 
     def _parse_compact_number(self, s: str) -> int:
         """Parse numbers with k/m/b/rb/jt suffixes like 5,598, 95.7m, 12,4k, 2,5 jt."""
@@ -242,6 +257,11 @@ class LiveWebScraperService(BaseDataService):
         url = f"https://www.instagram.com/{handle}/"
         try:
             r = self.session.get(url, headers={"User-Agent": self.CRAWLER_UA}, timeout=10)
+            # Check for redirect to login (Meta bot block on datacenter IPs like Streamlit Cloud / AWS)
+            if r.history or "/accounts/login" in r.url:
+                logger.warning("Instagram profile @%s redirected to login checkpoint (Datacenter IP block)", handle)
+                return {"success": False, "handle": handle, "reason": "blocked_by_platform", "status_code": 302}
+
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, "html.parser")
                 og_desc = soup.find("meta", {"property": "og:description"})
@@ -286,16 +306,28 @@ class LiveWebScraperService(BaseDataService):
                         "bio": bio,
                         "avatar_url": avatar,
                     }
+                else:
+                    # Received HTTP 200 but blank/anti-bot challenge payload
+                    logger.warning("Instagram profile @%s returned HTTP 200 without follower stats (challenge/blocked)", handle)
+                    return {"success": False, "handle": handle, "reason": "blocked_by_platform", "status_code": 200}
             elif r.status_code == 404:
                 logger.info("Instagram profile @%s returned 404", handle)
+                return {"success": False, "handle": handle, "reason": "not_found", "status_code": 404}
             else:
                 logger.warning("Instagram profile @%s returned HTTP %d", handle, r.status_code)
+                is_block = r.status_code in (429, 403, 302)
+                return {
+                    "success": False,
+                    "handle": handle,
+                    "reason": "blocked_by_platform" if is_block else f"http_{r.status_code}",
+                    "status_code": r.status_code,
+                }
         except requests.RequestException as e:
             logger.error("Network error scraping Instagram @%s: %s", handle, e)
+            return {"success": False, "handle": handle, "reason": "network_error"}
         except Exception as e:
             logger.error("Unexpected error scraping Instagram @%s: %s", handle, e, exc_info=True)
-
-        return {"success": False, "handle": handle}
+            return {"success": False, "handle": handle, "reason": "error"}
 
     def _get_chrome_path(self) -> Optional[str]:
         """Locates the Google Chrome or Chromium executable on the system."""
@@ -636,12 +668,19 @@ class LiveWebScraperService(BaseDataService):
                         "bio": bio,
                         "avatar_url": avatar,
                     }
+                else:
+                    return {"success": False, "handle": handle, "reason": "blocked_by_platform", "status_code": 200}
+            elif r.status_code == 404:
+                return {"success": False, "handle": handle, "reason": "not_found", "status_code": 404}
+            else:
+                is_block = r.status_code in (429, 403, 302)
+                return {"success": False, "handle": handle, "reason": "blocked_by_platform" if is_block else f"http_{r.status_code}", "status_code": r.status_code}
         except requests.RequestException as e:
             logger.error("Network error scraping Threads @%s: %s", handle, e)
+            return {"success": False, "handle": handle, "reason": "network_error"}
         except Exception as e:
             logger.error("Error scraping Threads @%s: %s", handle, e, exc_info=True)
-
-        return {"success": False, "handle": handle}
+            return {"success": False, "handle": handle, "reason": "error"}
 
     def _scrape_tiktok_profile(self, handle: str) -> Dict[str, Any]:
         """Scrapes live TikTok profile metadata."""
@@ -681,12 +720,19 @@ class LiveWebScraperService(BaseDataService):
                         "bio": desc,
                         "avatar_url": avatar,
                     }
+                else:
+                    return {"success": False, "handle": handle, "reason": "blocked_by_platform", "status_code": 200}
+            elif r.status_code == 404:
+                return {"success": False, "handle": handle, "reason": "not_found", "status_code": 404}
+            else:
+                is_block = r.status_code in (429, 403, 302)
+                return {"success": False, "handle": handle, "reason": "blocked_by_platform" if is_block else f"http_{r.status_code}", "status_code": r.status_code}
         except requests.RequestException as e:
             logger.error("Network error scraping TikTok @%s: %s", handle, e)
+            return {"success": False, "handle": handle, "reason": "network_error"}
         except Exception as e:
             logger.error("Error scraping TikTok @%s: %s", handle, e, exc_info=True)
-
-        return {"success": False, "handle": handle}
+            return {"success": False, "handle": handle, "reason": "error"}
 
     def fetch_account_data(
         self,
@@ -727,14 +773,15 @@ class LiveWebScraperService(BaseDataService):
                     if not profile.get("success") and chrome_result.get("success"):
                         profile = chrome_result
 
-        # If profile was NOT found at all
+        # If profile was NOT found or was blocked
         if not profile.get("success"):
+            is_blocked = profile.get("reason") in ("blocked_by_platform", "rate_limited")
             return {
                 "handle": handle,
                 "display_name": handle,
                 "platform": platform,
                 "avatar_url": _generate_dynamic_account_card(handle),
-                "bio": f"Akun @{handle} tidak ditemukan di {platform}.",
+                "bio": f"Akses profil @{handle} dibatasi/diblokir oleh {platform} (IP Cloud Server/Rate Limit)." if is_blocked else f"Akun @{handle} tidak ditemukan di {platform}.",
                 "followers": 0,
                 "start_followers": 0,
                 "growth_rate_pct": 0.0,
@@ -743,8 +790,9 @@ class LiveWebScraperService(BaseDataService):
                 "is_verified": False,
                 "historical_followers": [],
                 "posts": [],
-                "not_found": True,
-                "data_source": f"Akun @{handle} Tidak Ditemukan",
+                "not_found": not is_blocked,
+                "is_blocked": is_blocked,
+                "data_source": f"{platform} Membatasi Akses (Cloud IP Block)" if is_blocked else f"Akun @{handle} Tidak Ditemukan",
                 "has_real_post_metrics": False,
                 "history_source": "none",
             }

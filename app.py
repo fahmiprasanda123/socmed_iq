@@ -420,6 +420,19 @@ days_count = benchmark_data.get("date_range", {}).get("days", 30)
 
 # Check for not found accounts and display informative alert
 not_found_accounts = [acc["handle"] for acc in accounts_data if acc.get("not_found")]
+blocked_accounts = [acc["handle"] for acc in accounts_data if acc.get("is_blocked")]
+
+if blocked_accounts:
+    st.error(
+        f"🛡️ **Akses Dibatasi oleh {selected_platform} (Cloud/Datacenter IP Block):**<br>"
+        f"Server hosting (Streamlit Cloud / AWS) dibatasi oleh sistem anti-bot {selected_platform} saat mengambil data "
+        f"{', '.join(['@' + _escape_html(h) for h in blocked_accounts])}. Akun ini sebenarnya ada dan aktif.<br><br>"
+        "💡 **Solusi Praktis:**<br>"
+        "1. **Gunakan Fitur Data Historis (Rekomendasi):** Jalankan scraping di komputer lokal Anda (IP residential), lalu gunakan menu "
+        "<b>📁 Manajemen Data Historis</b> di sidebar untuk download database (.db) atau export CSV, kemudian upload di Streamlit Cloud.<br>"
+        "2. **Konfigurasi Proxy:** Tambahkan `PROXY_URL = \"http://user:pass@host:port\"` di menu <i>Settings &rarr; Secrets</i> Streamlit Cloud.",
+    )
+
 if not_found_accounts:
     st.warning(
         f"⚠️ **Akun tidak ditemukan:** {', '.join(['@' + _escape_html(h) for h in not_found_accounts])} tidak terdaftar atau tidak aktif di {selected_platform}. "
