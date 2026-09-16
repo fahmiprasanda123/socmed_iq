@@ -149,6 +149,7 @@ def build_comparison_matrix(all_accounts_data: List[Dict[str, Any]], days_count:
             "Is Main": kpi["is_main"],
             "Avatar": kpi["avatar_url"],
             "Has Real Metrics": kpi.get("has_real_metrics", False),
+            "History Source": acc.get("history_source", "none"),
         })
 
     if not rows:

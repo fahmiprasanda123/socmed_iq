@@ -27,6 +27,7 @@ from services.analytics import (
     generate_timing_heatmap_matrix,
 )
 from services.data_fetcher import LiveWebScraperService, _generate_dynamic_account_card
+from services.storage import storage_service
 from utils.helpers import (
     clean_handle,
     format_number,
@@ -199,6 +200,8 @@ if "benchmark_result" not in st.session_state:
     st.session_state.benchmark_result = None
 if "last_analysis_params" not in st.session_state:
     st.session_state.last_analysis_params = None
+if "toggle_enable_backfill" not in st.session_state:
+    st.session_state.toggle_enable_backfill = True
 
 
 # --- SIDEBAR INPUTS ---
@@ -277,6 +280,64 @@ with st.sidebar:
     # Action Button
     analyze_clicked = st.button("🚀 Analyze & Benchmark", type="primary", use_container_width=True)
 
+    st.markdown("---")
+
+    # Historical Tracking & Data Management Expander
+    with st.expander("🗄️ Manajemen Data Historis", expanded=False):
+        enable_backfill = st.toggle(
+            "Smart Backfill Estimasi",
+            value=True,
+            help="Jika diaktifkan, sistem mengestimasi tren kurva pertumbuhan organik ke belakang saat data riwayat database belum mencapai 7 hari. Data ini akan otomatis tergantikan seiring berjalannya hari.",
+            key="toggle_enable_backfill",
+        )
+
+        st.markdown("<p style='font-size:0.8rem; font-weight:600; color:#E2E8F0; margin:10px 0 4px 0;'>📥 Upload Riwayat (CSV / Excel)</p>", unsafe_allow_html=True)
+        uploaded_history = st.file_uploader(
+            "File CSV/Excel",
+            type=["csv", "xlsx", "xls"],
+            label_visibility="collapsed",
+            help="Format minimal: kolom date, handle, followers. Kolom opsional: following, total_posts, avg_er",
+            key="history_file_uploader",
+        )
+        if uploaded_history is not None:
+            if st.button("💾 Simpan ke Database", use_container_width=True, key="btn_save_import"):
+                ok, msg, count = storage_service.import_history_file(
+                    uploaded_history.getvalue(),
+                    uploaded_history.name,
+                )
+                if ok:
+                    st.success(f"✅ {msg}")
+                    st.session_state.benchmark_result = None
+                else:
+                    st.error(f"❌ {msg}")
+
+        st.markdown("<p style='font-size:0.8rem; font-weight:600; color:#E2E8F0; margin:12px 0 4px 0;'>📄 Template & Backup</p>", unsafe_allow_html=True)
+        c_tpl, c_exp = st.columns(2)
+        with c_tpl:
+            tpl_bytes = storage_service.get_sample_template_bytes(file_format="xlsx")
+            st.download_button(
+                "📥 Template",
+                data=tpl_bytes,
+                file_name="socialiq_template_historis.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="Unduh contoh format file Excel untuk input data historis",
+            )
+        with c_exp:
+            export_df = storage_service.export_history_df()
+            if not export_df.empty:
+                exp_bytes = to_excel_bytes(export_df)
+                st.download_button(
+                    "📤 Backup DB",
+                    data=exp_bytes,
+                    file_name=f"socialiq_db_backup_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    help="Unduh seluruh data snapshot yang tersimpan di SQLite",
+                )
+            else:
+                st.button("📤 Backup DB", disabled=True, use_container_width=True, help="Belum ada data di database")
+
 
 # Parse and clean account inputs
 main_handle = clean_handle(main_acc_str)
@@ -316,12 +377,14 @@ if analyze_clicked:
         time.sleep(0.1)
         st.write(f"2. Mengambil data follower, total post, dan metrik kompetitor...")
         
-        benchmark_data = LiveWebScraperService().fetch_benchmark_dataset(
+        scraper = LiveWebScraperService(enable_backfill=enable_backfill)
+        benchmark_data = scraper.fetch_benchmark_dataset(
             platform=selected_platform,
             main_account=main_handle,
             competitors=list(competitors),
             start_date=start_dt,
             end_date=end_dt,
+            enable_backfill=enable_backfill,
         )
         
         st.write("3. Menghitung Engagement Rate (ER), Page Performance Index (PPI), dan metrik lainnya...")
@@ -458,13 +521,23 @@ with tab_overview:
         )
 
     with c2:
+        # Determine if growth data is real or estimated
+        main_history_source = next(
+            (acc.get("history_source", "flat") for acc in accounts_data if acc.get("is_main")),
+            "flat",
+        )
+        show_growth_warning = (main_kpi["Growth (%)"] == 0.0 and main_history_source == "flat")
+        growth_notice_html = (
+            '<div class="no-data-notice">⚠️ Data historis tidak tersedia — pertumbuhan hanya bisa diukur jika ada snapshot sebelumnya.</div>'
+            if show_growth_warning else ""
+        )
         st.markdown(
             f"""
             <div class="metric-card">
                 <div class="metric-label">📈 Follower Growth</div>
                 <div class="metric-value">{format_percent(main_kpi['Growth (%)'])}</div>
                 {render_delta_html(diff_growth, is_pct=True)}
-                <div class="no-data-notice">⚠️ Data historis tidak tersedia — pertumbuhan hanya bisa diukur jika ada snapshot sebelumnya.</div>
+                {growth_notice_html}
             </div>
             """,
             unsafe_allow_html=True,
@@ -560,12 +633,35 @@ with tab_overview:
             height=220,
         )
 
-    st.caption("ℹ️ **PPI (Page Performance Index)**: Skor komposit 0–100 menggabungkan Engagement Rate (60%) dan Follower Growth Rate (40%). Growth saat ini 0% karena data historis belum tersedia.")
+    st.caption("ℹ️ **PPI (Page Performance Index)**: Skor komposit 0–100 menggabungkan Engagement Rate (60%) dan Follower Growth Rate (40%).")
 
     # 3. Follower Growth Trajectory Chart
     st.markdown("---")
+
+    has_db_history = any(acc.get("history_source") == "database" for acc in accounts_data)
+    has_backfill = any(acc.get("history_source") == "smart_backfill" for acc in accounts_data)
+
+    if has_db_history:
+        st.markdown(
+            """
+            <div style="display:inline-flex; align-items:center; gap:8px; background:rgba(16, 185, 129, 0.15); border:1px solid rgba(16, 185, 129, 0.4); border-radius:8px; padding:6px 14px; font-size:0.83rem; color:#6EE7B7; margin-bottom:12px;">
+                <span>🟢</span> <b>Data Riil Database</b> — Menggunakan riwayat snapshot harian yang tersimpan di SQLite / file import.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif has_backfill:
+        st.markdown(
+            """
+            <div style="display:inline-flex; align-items:center; gap:8px; background:rgba(245, 158, 11, 0.15); border:1px solid rgba(245, 158, 11, 0.4); border-radius:8px; padding:6px 14px; font-size:0.83rem; color:#FCD34D; margin-bottom:12px;">
+                <span>⚡</span> <b>Mode Smart Backfill Aktif</b> — Menampilkan estimasi kurva pertumbuhan organik karena akun baru pertama kali dianalisis. Snapshot harian otomatis disimpan ke database dan akan menggantikan estimasi ini seiring berjalannya waktu.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     st.plotly_chart(create_follower_growth_chart(accounts_data), use_container_width=True)
-    st.caption("ℹ️ Grafik menunjukkan jumlah follower saat ini. Tren pertumbuhan akan terlihat setelah beberapa sesi analisis dilakukan.")
+    st.caption("ℹ️ Grafik menunjukkan lintasan pertumbuhan follower harian antar akun dalam periode analisis.")
 
 
 # ==============================================================================
@@ -626,12 +722,14 @@ with tab_quadrant:
             quadrant_name = "💤 Low Impact"
             rec_text = "Frekuensi dan engagement rate akun Anda saat ini berada di bawah median kompetitor. **Rekomendasi:** Lakukan audit konten kompetitor di Tab 4 untuk melihat pilar topik dan hashtag terbaik, lalu tingkatkan jadwal posting minimal 1x per hari di jam optimal (Tab 3)."
 
+    # Convert markdown bold to HTML bold for safe rendering
+    rec_text_html = _escape_html(rec_text).replace("**", "<b>", 1).replace("**", "</b>", 1)
     st.markdown(
         f"""
         <div style="background:rgba(15, 23, 42, 0.9); border:1px solid rgba(99, 102, 241, 0.3); border-radius:12px; padding:18px 22px; margin-top:10px;">
             <div style="font-size:0.8rem; text-transform:uppercase; color:#818CF8; font-weight:700;">Status Diagnostik Akun Anda</div>
             <div style="font-size:1.15rem; font-weight:700; color:#FFFFFF; margin:4px 0 8px 0;">{_escape_html(quadrant_name)}</div>
-            <p style="margin:0; font-size:0.9rem; color:#CBD5E1; line-height:1.5;">{_escape_html(rec_text)}</p>
+            <p style="margin:0; font-size:0.9rem; color:#CBD5E1; line-height:1.5;">{rec_text_html}</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -887,8 +985,8 @@ with tab_content:
 st.markdown("---")
 st.markdown(
     """
-    <div style="text-align:center; font-size:0.8rem; color:#64748B; padding:10px 0 20px 0;">
-        ⚡ <b>SocialIQ Benchmarking System</b> — Social Intelligence • Built with Python & Streamlit • by <a href="https://threads.net/@itsamilitarysecret" target="_blank" style="color:#818CF8; text-decoration:none; font-weight:600;">threads.com/@itsamilitarysecret</a>
+    <div style="text-align:center; font-size:0.82rem; color:#64748B; padding:10px 0 20px 0;">
+        ⚡ <b>SocialIQ Benchmarking System</b> — Social Intelligence • Built with Python & Streamlit • by <a href="https://threads.net/@itsamilitarysecret" target="_blank" style="color:#818CF8; text-decoration:none; font-weight:600;">threads.net/@itsamilitarysecret</a> • <a href="https://saweria.co/itsamilitarysecret" target="_blank" style="color:#F59E0B; text-decoration:none; font-weight:600;">☕ Traktir Kopi</a>
     </div>
     """,
     unsafe_allow_html=True,

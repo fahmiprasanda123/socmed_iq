@@ -24,6 +24,7 @@ from bs4 import BeautifulSoup
 import urllib.parse
 
 from utils.helpers import clean_handle
+from services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class BaseDataService(abc.ABC):
         raw_account: str,
         start_date: datetime.date,
         end_date: datetime.date,
+        enable_backfill: bool = True,
     ) -> Dict[str, Any]:
         """Fetch profile metadata and posts for an account."""
         pass
@@ -73,6 +75,7 @@ class BaseDataService(abc.ABC):
         competitors: List[str],
         start_date: datetime.date,
         end_date: datetime.date,
+        enable_backfill: bool = True,
     ) -> Dict[str, Any]:
         """Fetch benchmark dataset for main account and all competitor accounts."""
         if isinstance(start_date, datetime.datetime):
@@ -102,6 +105,7 @@ class BaseDataService(abc.ABC):
                         raw_account=handle,
                         start_date=start_date,
                         end_date=end_date,
+                        enable_backfill=enable_backfill,
                     ): handle
                     for handle in all_handles
                 }
@@ -127,6 +131,8 @@ class BaseDataService(abc.ABC):
                             "posts": [],
                             "not_found": True,
                             "data_source": "Error",
+                            "has_real_post_metrics": False,
+                            "history_source": "none",
                         }
             for handle in all_handles:
                 if handle in acc_map:
@@ -142,6 +148,7 @@ class BaseDataService(abc.ABC):
                         raw_account=handle,
                         start_date=start_date,
                         end_date=end_date,
+                        enable_backfill=enable_backfill,
                     )
                 except Exception as e:
                     logger.error("Failed to fetch data for @%s: %s", handle, e, exc_info=True)
@@ -161,6 +168,8 @@ class BaseDataService(abc.ABC):
                         "posts": [],
                         "not_found": True,
                         "data_source": "Error",
+                        "has_real_post_metrics": False,
+                        "history_source": "none",
                     }
                 acc["is_main"] = is_main
                 accounts_data.append(acc)
@@ -195,7 +204,8 @@ class LiveWebScraperService(BaseDataService):
     # Social crawler User-Agent that receives full OpenGraph metadata without JS/login redirection
     CRAWLER_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 
-    def __init__(self):
+    def __init__(self, *args, enable_backfill: bool = True, **kwargs):
+        self.enable_backfill = enable_backfill
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": self.DEFAULT_UA,
@@ -684,11 +694,12 @@ class LiveWebScraperService(BaseDataService):
         raw_account: str,
         start_date: datetime.date,
         end_date: datetime.date,
+        enable_backfill: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Executes live web scraping for the profile, then computes
         engagement analytics strictly from scraped data.
-        No synthetic/random data is generated.
+        Snapshots are automatically recorded to local SQLite DB for historical tracking.
         """
         handle = clean_handle(raw_account)
         platform_lower = platform.lower()
@@ -734,6 +745,8 @@ class LiveWebScraperService(BaseDataService):
                 "posts": [],
                 "not_found": True,
                 "data_source": f"Akun @{handle} Tidak Ditemukan",
+                "has_real_post_metrics": False,
+                "history_source": "none",
             }
 
         followers = profile["followers"]
@@ -843,21 +856,72 @@ class LiveWebScraperService(BaseDataService):
                 }
                 posts.append(post_entry)
 
+        # 3. Snapshot persistence to local SQLite Database
+        real_posts = [p for p in posts if not p.get("is_estimated", False)]
+        avg_likes = sum(p.get("likes", 0) for p in real_posts) / max(1, len(real_posts)) if real_posts else 0.0
+        avg_comments = sum(p.get("comments", 0) for p in real_posts) / max(1, len(real_posts)) if real_posts else 0.0
+        avg_er = ((avg_likes + avg_comments) / max(1, followers)) * 100.0 if followers > 0 else 0.0
+
+        storage_service.save_account_snapshot(
+            platform=platform,
+            handle=handle,
+            followers=followers,
+            following=following,
+            total_posts=total_posts_lifetime,
+            avg_likes=avg_likes,
+            avg_comments=avg_comments,
+            avg_er=avg_er,
+            snapshot_date=end_date,
+            source="scraper",
+        )
+
+        if posts:
+            storage_service.save_posts_cache(platform, handle, posts)
+
+        # Merge previously cached historical posts for earlier dates
+        cached_db_posts = storage_service.get_cached_posts(platform, handle, start_date, end_date)
+        if cached_db_posts:
+            existing_urls = {p.get("post_url") for p in posts if p.get("post_url")}
+            for cp in cached_db_posts:
+                if cp.get("post_url") and cp["post_url"] not in existing_urls:
+                    posts.append({
+                        "post_id": cp.get("post_id", ""),
+                        "shortcode": cp.get("post_id", ""),
+                        "timestamp": cp.get("timestamp", ""),
+                        "posted_at": cp.get("timestamp", "")[:10] if cp.get("timestamp") else "",
+                        "content_type": cp.get("post_type", "Image"),
+                        "caption": cp.get("caption", ""),
+                        "likes": cp.get("likes", 0),
+                        "comments": cp.get("comments", 0),
+                        "shares": cp.get("shares", 0),
+                        "saves": 0,
+                        "views": cp.get("views", 0),
+                        "total_interactions": cp.get("likes", 0) + cp.get("comments", 0),
+                        "post_er": round(((cp.get("likes", 0) + cp.get("comments", 0)) / max(1, followers)) * 100.0, 2),
+                        "thumbnail_url": "",
+                        "post_url": cp.get("post_url", ""),
+                        "is_estimated": cp.get("is_estimated", False),
+                        "in_date_range": True,
+                    })
+                    existing_urls.add(cp["post_url"])
+
         # Sort posts by timestamp (newest first), posts without timestamp at end
         posts.sort(key=lambda x: x.get("timestamp", "") or "", reverse=True)
 
-        # 3. Follower data — we only know current followers, no historical data
-        # Show flat line at current follower count (honest — no fake growth)
-        start_followers = followers
-        growth_rate_pct = 0.0
-        daily_followers = []
-        if followers > 0 and days_count > 0:
-            for i in range(min(days_count, 90)):  # Cap at 90 days for performance
-                d = start_date + datetime.timedelta(days=i)
-                daily_followers.append({
-                    "date": d.strftime("%Y-%m-%d"),
-                    "followers": followers,
-                })
+        # 4. Follower data: Check SQLite database snapshots first, or use Smart Backfill if enabled
+        backfill_setting = self.enable_backfill if enable_backfill is None else enable_backfill
+        daily_followers, growth_rate_pct, history_source = storage_service.resolve_follower_history(
+            platform=platform,
+            handle=handle,
+            current_followers=followers,
+            start_date=start_date,
+            end_date=end_date,
+            enable_backfill=backfill_setting,
+            total_posts=total_posts_lifetime,
+            avg_er=avg_er,
+        )
+
+        start_followers = daily_followers[0]["followers"] if daily_followers else followers
 
         return {
             "handle": handle,
@@ -875,6 +939,7 @@ class LiveWebScraperService(BaseDataService):
             "posts": posts,
             "data_source": source_tag,
             "has_real_post_metrics": has_real_post_metrics,
+            "history_source": history_source,
         }
 
 
