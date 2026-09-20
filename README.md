@@ -14,10 +14,16 @@ Seluruh data ditarik secara langsung (*live scraping*) dari profil publik aktual
 ## ✨ Fitur Utama
 
 - ⚡ **Live Web Scraper**: Mengambil metrik aktual (follower, jumlah postingan, like, komentar, caption) langsung dari profil publik (Instagram, Threads, TikTok).
-- 📊 **Head-to-Head Benchmarking Matrix**: Perbandingan metrik utama (Total Followers, Growth %, Estimated ER, Avg Interactions, Post Volume) antar akun secara berdampingan.
-- 🎯 **Content Quadrant Analysis**: Matriks kuadran efektivitas konten (Volume Post vs Average Interactions) yang mengelompokkan akun ke dalam 4 kategori strategi (*High Efficiency Champions, Growth Grinders, Niche Specialists, Low Impact Risk*) beserta rekomendasi tindakan nyata.
+- 🚀 **1-Click Demo Niche Presets**: Mode demo instan tanpa perlu mengetik manual (Kopi Kekinian, Skincare Lokal, Tech Gadget, Local Streetwear).
+- ⚔️ **Account Battle Card (PNG Export)**: Generator infografis head-to-head beresolusi tinggi yang siap dibagikan ke Instagram Story (9:16), Feed/Threads, atau Twitter (X).
+- 📊 **Head-to-Head Benchmarking Matrix**: Perbandingan metrik utama (Total Followers, Growth %, Estimated ER, Avg Interactions, Post Volume, PPI) antar akun secara berdampingan.
+- 🎯 **Content Quadrant Analysis**: Matriks kuadran efektivitas konten (Volume Post vs Average Interactions) yang mengelompokkan akun ke dalam 4 kategori strategi (*High Efficiency Champions, Growth Grinders, Niche Specialists, Low Impact Risk*).
 - 🕒 **Best Posting Time Heatmap**: Peta panas (heatmap) 24x7 untuk mengidentifikasi hari dan jam dengan rata-rata interaksi tertinggi.
-- 🏷️ **Hashtag Performance Analytics**: Deteksi otomatis tagar pada postingan dan analisis korelasi hashtag terhadap performa interaksi.
+- 🏷️ **Hashtag & WordCloud Intelligence**: Deteksi otomatis tagar dan visualisasi frekuensi topik/kata kunci caption dalam WordCloud interaktif.
+- 🤖 **AI "Steal Like an Artist" Content Strategist**: Bedah formula postingan viral kompetitor dan generator 3 ide konten tandingan siap eksekusi (Hook 0–3 detik, naskah, & CTA).
+- 🛡️ **Audience Health & Ghost Follower Audit**: Evaluasi keaslian audiens (Grade A+ s/d F) dan deteksi heuristik risiko akun pasif/bot.
+- 💰 **Commercial Rate Card & Sponsorship Estimator**: Kalkulator estimasi tarif endorsement wajar (Feed, Reels/Video, Story) dalam Rupiah (IDR) berdasarkan skala audiens & ER multiplier.
+- 📄 **One-Click Executive Client Audit Deck**: Ekspor laporan audit komprehensif ke format HTML modern yang siap dicetak ke PDF (Print-to-PDF) untuk klien atau manajemen.
 - 📁 **Historical Tracking & SQLite Persistence**: Penyimpanan snapshot metrik ke dalam database lokal (`data/socialiq.db`) untuk analisis tren jangka panjang.
 - 🤖 **CLI Daily Tracker (`track_daily.py`)**: Script command-line yang siap dijadwalkan via `cron` (Linux/macOS) atau *Task Scheduler* (Windows) untuk otomatis merekam snapshot metrik setiap hari.
 - 📥 **Export & Import Data**: Unduh laporan analitik ke format Excel (`.xlsx`) atau CSV, serta kemampuan mengimpor riwayat metrik eksternal.

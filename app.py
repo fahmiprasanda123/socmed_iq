@@ -28,6 +28,7 @@ try:
         create_quadrant_scatter,
         create_timing_heatmap,
         create_wordcloud_figure,
+        generate_battle_card_image,
     )
 except ImportError:
     from components.charts import (
@@ -43,6 +44,8 @@ except ImportError:
         ax.text(0.5, 0.5, "Silakan Rerun aplikasi untuk memuat WordCloud", color="#94A3B8", ha="center", va="center")
         ax.axis("off")
         return fig
+    def generate_battle_card_image(*args, **kwargs):
+        return b""
 
 import services.analytics
 try:
@@ -58,6 +61,10 @@ try:
         flatten_all_posts,
         generate_timing_heatmap_matrix,
         generate_wordcloud_frequencies,
+        calculate_rate_card_and_commercial_value,
+        audit_audience_health,
+        generate_counter_content_strategies,
+        generate_executive_audit_html,
     )
 except ImportError:
     from services.analytics import (
@@ -69,6 +76,14 @@ except ImportError:
     )
     def generate_wordcloud_frequencies(*args, **kwargs):
         return {}
+    def calculate_rate_card_and_commercial_value(*args, **kwargs):
+        return {}
+    def audit_audience_health(*args, **kwargs):
+        return {}
+    def generate_counter_content_strategies(*args, **kwargs):
+        return []
+    def generate_executive_audit_html(*args, **kwargs):
+        return ""
 
 import services.data_fetcher
 try:
@@ -82,6 +97,7 @@ from utils.helpers import (
     clean_handle,
     format_number,
     format_percent,
+    format_idr,
     to_csv_bytes,
     to_excel_bytes,
 )
@@ -254,6 +270,14 @@ if "toggle_enable_backfill" not in st.session_state:
     st.session_state.toggle_enable_backfill = True
 
 
+def apply_preset(main: str, comps: list, platform: str):
+    """Callback to safely set session state before widgets instantiate."""
+    st.session_state.main_acc_input = main
+    st.session_state.comp_acc_input = "\n".join(comps)
+    st.session_state.platform_choice = platform
+    st.session_state.benchmark_result = None
+
+
 # --- SIDEBAR INPUTS ---
 with st.sidebar:
     st.markdown(
@@ -284,6 +308,53 @@ with st.sidebar:
         format_func=lambda x: f"{platform_icons[x]} {x}",
         key="platform_choice",
     )
+
+    # 1-Click Niche Presets in Sidebar
+    NICHE_PRESETS = [
+        {
+            "id": "coffee",
+            "name": "☕ Kopi Kekinian",
+            "platform": "Instagram",
+            "main": "kopikenangan.id",
+            "competitors": ["fore.coffee", "janjiwa.id"],
+            "desc": "Battle kedai kopi modern",
+        },
+        {
+            "id": "skincare",
+            "name": "💄 Beauty & Skincare",
+            "platform": "Instagram",
+            "main": "somethincofficial",
+            "competitors": ["skintificid", "scarlett_whitening"],
+            "desc": "Brand skincare lokal terpopuler",
+        },
+        {
+            "id": "tech",
+            "name": "📱 Tech & Gadget Reviewer",
+            "platform": "Instagram",
+            "main": "gadgetins",
+            "competitors": ["jagat.gadget", "davidbrendi"],
+            "desc": "Duel reviewer teknologi Indonesia",
+        },
+        {
+            "id": "fashion",
+            "name": "👗 Local Apparel & Streetwear",
+            "platform": "Instagram",
+            "main": "erigostore",
+            "competitors": ["roughneck1991"],
+            "desc": "Streetwear & fashion lokal",
+        },
+    ]
+
+    with st.expander("⚡ 1-Klik Niche Presets", expanded=False):
+        st.caption("Isi otomatis akun benchmark dengan 1 klik:")
+        for p in NICHE_PRESETS:
+            st.button(
+                f"{p['name']}",
+                key=f"sb_preset_{p['id']}",
+                use_container_width=True,
+                on_click=apply_preset,
+                args=(p["main"], p["competitors"], p["platform"]),
+            )
 
     # Main Account Input
     main_acc_str = st.text_input(
@@ -398,22 +469,103 @@ competitors = competitors_raw[:5]
 if not main_handle:
     st.markdown(
         """
-        <div style="text-align:center; padding: 60px 20px; background: rgba(30, 41, 59, 0.4); border: 1px dashed rgba(255,255,255,0.15); border-radius: 16px; margin-top: 20px;">
-            <div style="font-size: 48px; margin-bottom: 16px;">⚡</div>
-            <h2 style="color: #FFFFFF; font-weight: 700; margin-bottom: 4px;">SocialIQ Benchmarking & Intelligence</h2>
-            <p style="color: #818CF8; font-size: 0.85rem; font-weight: 600; margin: 0 0 16px 0;">
-                by <a href="https://threads.net/@itsamilitarysecret" target="_blank" style="color:#818CF8; text-decoration:none;">threads.com/@itsamilitarysecret</a>
+        <div style="text-align:center; padding: 40px 20px 24px 20px; background: rgba(30, 41, 59, 0.4); border: 1px dashed rgba(255,255,255,0.15); border-radius: 16px; margin-top: 10px;">
+            <div style="font-size: 44px; margin-bottom: 12px;">⚡</div>
+            <h2 style="color: #FFFFFF; font-weight: 800; margin-bottom: 4px; font-size: 1.8rem;">SocialIQ Benchmarking & Intelligence</h2>
+            <p style="color: #818CF8; font-size: 0.88rem; font-weight: 600; margin: 0 0 14px 0;">
+                by <a href="https://threads.net/@itsamilitarysecret" target="_blank" style="color:#818CF8; text-decoration:none;">threads.com/@itsamilitarysecret</a> • <a href="https://saweria.co/itsamilitarysecret" target="_blank" style="color:#F59E0B; text-decoration:none;">☕ Traktir Kopi</a>
             </p>
-            <p style="color: #94A3B8; max-width: 540px; margin: 0 auto 24px auto; font-size: 0.95rem; line-height: 1.6;">
-                Bandingkan performa akun media sosial Anda dengan kompetitor secara mendalam (Engagement Rate, Follower Growth, Efficiency Quadrant, Best Posting Time, & Keyword Intelligence).
+            <p style="color: #94A3B8; max-width: 620px; margin: 0 auto 20px auto; font-size: 0.95rem; line-height: 1.6;">
+                Bandingkan performa akun media sosial Anda dengan kompetitor secara mendalam: Engagement Rate, Follower Growth, Efficiency Quadrant, Best Posting Time, <b>AI Content Strategist</b>, dan <b>Audience Health & Rate Card</b>.
             </p>
-            <div style="display: inline-block; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 8px; padding: 12px 24px; color: #A5B4FC; font-size: 0.9rem;">
-                👈 <b>Langkah Awal:</b> Masukkan <b>Akun Utama</b> dan akun kompetitor di sidebar sebelah kiri, lalu klik <b>Analyze & Benchmark</b>.
-            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+    st.subheader("🚀 Coba 1-Klik Niche Battle Presets (Demo Cepat)")
+    st.caption("Pilih salah satu industri di bawah untuk langsung mencoba analitik dan benchmarking tanpa perlu mengetik:")
+
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.markdown(
+            """
+            <div style="background:rgba(30,41,59,0.7); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:16px; margin-bottom:12px;">
+                <div style="font-size:1.1rem; font-weight:700; color:#FFFFFF; margin-bottom:4px;">☕ Kopi Kekinian (F&B)</div>
+                <div style="font-size:0.8rem; color:#818CF8; font-weight:600; margin-bottom:6px;">Instagram • @kopikenangan.id vs @fore.coffee, @janjiwa.id</div>
+                <div style="font-size:0.82rem; color:#94A3B8; margin-bottom:12px;">Perang brand kopi modern: bandingkan engagement rate, konten viral, dan pilar promo harian.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "⚡ Muat Battle Kopi",
+            key="preset_btn_coffee",
+            use_container_width=True,
+            type="primary",
+            on_click=apply_preset,
+            args=("kopikenangan.id", ["fore.coffee", "janjiwa.id"], "Instagram"),
+        )
+
+        st.markdown(
+            """
+            <div style="background:rgba(30,41,59,0.7); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:16px; margin-bottom:12px; margin-top:14px;">
+                <div style="font-size:1.1rem; font-weight:700; color:#FFFFFF; margin-bottom:4px;">📱 Tech Reviewer Indonesia</div>
+                <div style="font-size:0.8rem; color:#818CF8; font-weight:600; margin-bottom:6px;">Instagram • @gadgetins vs @jagat.gadget, @davidbrendi</div>
+                <div style="font-size:0.82rem; color:#94A3B8; margin-bottom:12px;">Duel reviewer gadget terpopuler: rasio interaksi video reels vs photo unboxing.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "⚡ Muat Battle Tech Reviewer",
+            key="preset_btn_tech",
+            use_container_width=True,
+            on_click=apply_preset,
+            args=("gadgetins", ["jagat.gadget", "davidbrendi"], "Instagram"),
+        )
+
+    with col_p2:
+        st.markdown(
+            """
+            <div style="background:rgba(30,41,59,0.7); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:16px; margin-bottom:12px;">
+                <div style="font-size:1.1rem; font-weight:700; color:#FFFFFF; margin-bottom:4px;">💄 Beauty & Skincare Lokal</div>
+                <div style="font-size:0.8rem; color:#818CF8; font-weight:600; margin-bottom:6px;">Instagram • @somethincofficial vs @skintificid, @scarlett_whitening</div>
+                <div style="font-size:0.82rem; color:#94A3B8; margin-bottom:12px;">Persaingan raksasa kecantikan: identifikasi waktu posting optimal dan hashtag juara.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "⚡ Muat Battle Skincare",
+            key="preset_btn_skincare",
+            use_container_width=True,
+            type="primary",
+            on_click=apply_preset,
+            args=("somethincofficial", ["skintificid", "scarlett_whitening"], "Instagram"),
+        )
+
+        st.markdown(
+            """
+            <div style="background:rgba(30,41,59,0.7); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:16px; margin-bottom:12px; margin-top:14px;">
+                <div style="font-size:1.1rem; font-weight:700; color:#FFFFFF; margin-bottom:4px;">👗 Local Apparel & Streetwear</div>
+                <div style="font-size:0.8rem; color:#818CF8; font-weight:600; margin-bottom:6px;">Instagram • @erigostore vs @roughneck1991</div>
+                <div style="font-size:0.82rem; color:#94A3B8; margin-bottom:12px;">Brand pakaian lokal terlaris: telusuri efisiensi volume post harian vs jangkauan.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "⚡ Muat Battle Apparel",
+            key="preset_btn_fashion",
+            use_container_width=True,
+            on_click=apply_preset,
+            args=("erigostore", ["roughneck1991"], "Instagram"),
+        )
+
+    st.markdown("<div style='margin-top:26px;'></div>", unsafe_allow_html=True)
+    st.info("💡 **Atau Analisis Akun Anda Sendiri:** Masukkan username akun Anda dan kompetitor di menu sebelah kiri (sidebar), lalu klik tombol **🚀 Analyze & Benchmark**.")
     st.stop()
 
 
@@ -542,16 +694,18 @@ st.markdown(
 )
 
 # --- TABS NAVIGATION ---
-tab_overview, tab_quadrant, tab_timing, tab_content = st.tabs([
-    "📊 Benchmark Matrix (Overview)",
+tab_overview, tab_quadrant, tab_timing, tab_content, tab_ai_strategist, tab_health_ratecard = st.tabs([
+    "📊 Benchmark Matrix & Battle Card",
     "🎯 Efficiency & Quadrant",
     "⏰ Content Timing (Heatmap)",
     "💡 Content & Keyword Intelligence",
+    "🤖 AI Content Strategist & Hook",
+    "🛡️ Audience Health & Rate Card",
 ])
 
 
 # ==============================================================================
-# TAB 1: BENCHMARK MATRIX (OVERVIEW)
+# TAB 1: BENCHMARK MATRIX & BATTLE CARD
 # ==============================================================================
 with tab_overview:
     # 1. Metric Cards
@@ -630,16 +784,49 @@ with tab_overview:
             unsafe_allow_html=True,
         )
 
-    st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
 
-    # 2. Comparison Table
+    # 2. Account Battle Card (Shareable Infographic Generator)
+    if not comp_rows.empty:
+        top_comp = comp_rows.sort_values(by="Followers", ascending=False).iloc[0].to_dict()
+    else:
+        top_comp = main_kpi.to_dict()
+
+    with st.expander("⚔️ Head-to-Head Battle Card (Infografis Siap Share)", expanded=True):
+        st.caption("Infografis estetik head-to-head yang siap Anda download dan bagikan di Instagram Story (9:16), Feed/Threads, atau Twitter (X).")
+        col_bc_preview, col_bc_action = st.columns([3, 2])
+        card_png_bytes = generate_battle_card_image(
+            main_kpi.to_dict(),
+            top_comp,
+            platform=selected_platform,
+        )
+        with col_bc_preview:
+            if card_png_bytes:
+                st.image(card_png_bytes, caption=f"Battle Card: @{main_handle} vs @{top_comp.get('Profile', 'Kompetitor')}", use_container_width=True)
+        with col_bc_action:
+            st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+            st.markdown(f"**Pertarungan Sengit:**<br><span style='color:#34D399; font-weight:700;'>@{_escape_html(main_handle)}</span> *(You)*<br><span style='color:#94A3B8; font-size:0.85rem;'>VS</span><br><span style='color:#38BDF8; font-weight:700;'>@{_escape_html(top_comp.get('Profile', 'Kompetitor'))}</span> *(Top Competitor)*", unsafe_allow_html=True)
+            st.markdown("<p style='font-size:0.83rem; color:#94A3B8; margin-top:10px;'>Kartu ini otomatis menyoroti pemenang Engagement Rate (ER), skor PPI, dan skala follower.</p>", unsafe_allow_html=True)
+            if card_png_bytes:
+                st.download_button(
+                    "📥 Download Battle Card (PNG)",
+                    data=card_png_bytes,
+                    file_name=f"socialiq_battle_{main_handle}_vs_{top_comp.get('Profile', 'kompetitor')}.png",
+                    mime="image/png",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+    st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
+
+    # 3. Comparison Table
     col_t_header, col_export = st.columns([3, 1])
     with col_t_header:
         st.subheader("📋 Comparison Matrix")
-        st.caption("Perbandingan komprehensif metrik utama akun Anda dengan kompetitor. Data berasal dari live scraping.")
+        st.caption("Perbandingan komprehensif metrik utama akun Anda dengan kompetitor. Data bersumber dari live scraping & intelligent benchmark modeling.")
     
     # Format display DataFrame
-    col_period_posts = f"Posts (Scraped)"
+    col_period_posts = f"Posts (Periode)"
     display_df = comparison_df[[
         "Profile", "Followers", "Growth (%)", "Lifetime Posts", "Total Posts", "Posts/Day", 
         "Avg Likes", "Avg Comments", "Shares/Saves", "PPI", "ER (%)"
@@ -697,6 +884,12 @@ with tab_overview:
         )
 
     st.caption("ℹ️ **PPI (Page Performance Index)**: Skor komposit 0–100 menggabungkan Engagement Rate (60%) dan Follower Growth Rate (40%).")
+    has_any_estimated = any(acc.get("has_real_post_metrics") is False for acc in accounts_data)
+    if has_any_estimated:
+        st.caption(
+            "🛡️ **Proteksi Crawler Aktif**: Ketika feed postingan individual dilindungi sistem anti-bot Meta/platform, "
+            "metrik postingan & engagement menggunakan **Industry Benchmark Modeling** yang dikalibrasi secara cerdas berdasarkan follower riil dan total postingan profil akun."
+        )
 
     # 3. Follower Growth Trajectory Chart
     st.markdown("---")
@@ -1095,6 +1288,295 @@ with tab_content:
         )
     else:
         st.info("Belum ada data kata kunci atau tagar yang cukup dari postingan yang di-scrape untuk menghasilkan WordCloud.")
+
+
+# ==============================================================================
+# TAB 5: AI CONTENT STRATEGIST & HOOK (STEAL LIKE AN ARTIST)
+# ==============================================================================
+with tab_ai_strategist:
+    st.subheader("🤖 AI 'Steal Like an Artist' Content Strategist")
+    st.caption(
+        "Membedah formula postingan viral kompetitor yang terbukti meledak, "
+        "lalu menyusun 3 ide konten tandingan siap eksekusi lengkap dengan kalimat pembuka (Hook 0–3 detik), naskah, dan CTA."
+    )
+
+    strategies = generate_counter_content_strategies(posts_df, main_handle)
+
+    if not strategies:
+        st.info("Belum ada data postingan kompetitor yang cukup untuk dibedah formulanya.")
+    else:
+        st.markdown(
+            f"""
+            <div style="background:linear-gradient(90deg, rgba(99,102,241,0.15) 0%, rgba(16,185,129,0.1) 100%); border:1px solid rgba(99,102,241,0.3); border-radius:12px; padding:16px 20px; margin:10px 0 22px 0;">
+                <div style="font-size:0.8rem; text-transform:uppercase; color:#818CF8; font-weight:700;">Blueprint Strategi Konten Juara</div>
+                <div style="font-size:1.05rem; font-weight:700; color:#FFFFFF; margin-top:2px;">
+                    Bedah 3 Postingan Teratas Kompetitor & Formula Konten Tandingan untuk @{_escape_html(main_handle)}
+                </div>
+                <div style="font-size:0.83rem; color:#CBD5E1; margin-top:4px;">
+                    Jangan meniru mentah-mentah (*plagiarism*), tetapi <b>curi strukturnya</b>: gunakan hook psikologis yang sama dengan sudut pandang unik brand Anda!
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        for s_idx, strat in enumerate(strategies, start=1):
+            comp_p = strat.get("competitor_post", {})
+            why_text = strat.get("why_it_worked", "")
+            ideas = strat.get("counter_ideas", [])
+
+            with st.container():
+                st.markdown(
+                    f"""
+                    <div style="background:rgba(15, 23, 42, 0.85); border:1px solid rgba(99, 102, 241, 0.25); border-radius:12px; padding:18px 20px; margin-bottom:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="background:#4F46E5; color:#FFFFFF; font-weight:800; font-size:0.75rem; padding:2px 8px; border-radius:6px;">POSTINGAN VIRAL #{s_idx}</span>
+                                <span style="font-weight:700; color:#F8FAFC;">@{_escape_html(comp_p.get('account', ''))}</span>
+                                <span style="font-size:0.75rem; color:#A5B4FC; background:rgba(99,102,241,0.18); border:1px solid rgba(99,102,241,0.3); padding:2px 8px; border-radius:10px;">{_escape_html(comp_p.get('format', 'Post'))}</span>
+                            </div>
+                            <div style="font-size:0.8rem; color:#94A3B8;">
+                                ❤️ <b>{format_number(comp_p.get('likes', 0))}</b> &nbsp;•&nbsp; 
+                                💬 <b>{format_number(comp_p.get('comments', 0))}</b> &nbsp;•&nbsp; 
+                                <span style="color:#10B981; font-weight:700;">⚡ ER {comp_p.get('er', 0.0):.2f}%</span>
+                            </div>
+                        </div>
+                        <div style="font-size:0.86rem; color:#E2E8F0; background:rgba(30,41,59,0.5); border-left:3px solid #818CF8; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-style:italic;">
+                            "{_escape_html(comp_p.get('caption', ''))}"
+                        </div>
+                        <div style="display:flex; align-items:flex-start; gap:8px; font-size:0.84rem; color:#FCD34D; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.25); border-radius:8px; padding:10px 14px;">
+                            <span style="font-size:16px;">🔍</span>
+                            <div>
+                                <b>Anatomi Keberhasilan Konten (Why It Blew Up):</b><br>
+                                <span style="color:#E2E8F0;">{_escape_html(why_text)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown(f"**💡 Ide Konten Tandingan Siap Eksekusi untuk @{_escape_html(main_handle)}:**")
+                idea_cols = st.columns(len(ideas))
+                for c_idx, idea in enumerate(ideas):
+                    with idea_cols[c_idx]:
+                        hook_str = _escape_html(idea.get("hook", ""))
+                        script_str = _escape_html(idea.get("script_angle", ""))
+                        fmt_str = _escape_html(idea.get("format_rec", "Carousel"))
+                        cta_str = _escape_html(idea.get("cta", ""))
+                        st.markdown(
+                            f"""
+                            <div style="background:rgba(30,41,59,0.7); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:14px; min-height:280px; display:flex; flex-direction:column; justify-content:space-between; margin-bottom:16px;">
+                                <div>
+                                    <div style="font-size:0.82rem; font-weight:700; color:#818CF8; text-transform:uppercase; margin-bottom:4px;">Ide #{c_idx+1}: {_escape_html(idea.get('title', ''))}</div>
+                                    <div style="font-size:0.72rem; color:#34D399; font-weight:600; margin-bottom:8px;">{fmt_str}</div>
+                                    <div style="font-size:0.84rem; color:#F8FAFC; background:rgba(15,23,42,0.8); border:1px solid rgba(99,102,241,0.3); border-radius:6px; padding:8px 10px; margin-bottom:10px; font-weight:600; line-height:1.4;">
+                                        🎯 <b>Hook 0–3 Detik:</b><br>
+                                        <span style="color:#FCD34D;">"{hook_str}"</span>
+                                    </div>
+                                    <div style="font-size:0.8rem; color:#CBD5E1; line-height:1.45; margin-bottom:10px;">
+                                        <b>Naskah / Alur Cerita:</b><br>{script_str}
+                                    </div>
+                                </div>
+                                <div style="font-size:0.76rem; color:#94A3B8; border-top:1px dashed rgba(255,255,255,0.1); padding-top:8px;">
+                                    <b>CTA Rekomendasi:</b> {cta_str}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                st.markdown("<div style='margin-bottom:20px;'></div>", unsafe_allow_html=True)
+
+
+# ==============================================================================
+# TAB 6: AUDIENCE HEALTH & RATE CARD
+# ==============================================================================
+with tab_health_ratecard:
+    st.subheader("🛡️ Audience Health & Commercial Rate Card Audit")
+    st.caption("Audit keaslian komunitas (deteksi risiko ghost/bot followers) dan estimasi tarif wajar sponsorship berdasarkan nilai pasar aktual.")
+
+    main_health = audit_audience_health(main_kpi.to_dict())
+    main_rate = calculate_rate_card_and_commercial_value(main_kpi.to_dict(), platform=selected_platform)
+
+    # 1. Audience Health & Ghost Follower Audit
+    st.markdown("### 1. 🛡️ Audit Kesehatan Audiens & Indikasi Ghost Followers")
+    h_col1, h_col2, h_col3 = st.columns([1.4, 2.6, 2])
+
+    with h_col1:
+        st.markdown(
+            f"""
+            <div class="metric-card" style="text-align:center;">
+                <div class="metric-label">Audience Health Grade</div>
+                <div style="font-size:3.2rem; font-weight:900; color:{main_health['grade_badge_color']}; line-height:1.1; margin:4px 0;">
+                    {main_health['grade']}
+                </div>
+                <div style="font-size:0.85rem; color:#94A3B8; font-weight:600;">
+                    Skor Kesehatan: <b>{main_health['health_score']}/100</b>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with h_col2:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <span class="metric-label">Tingkat Risiko Follower Pasif / Ghost</span>
+                    <span style="font-size:0.82rem; font-weight:700; color:{main_health['grade_badge_color']};">{main_health['ghost_risk_level']}</span>
+                </div>
+                <div style="font-size:1.6rem; font-weight:800; color:#FFFFFF; margin-bottom:6px;">
+                    {main_health['ghost_risk_pct']}% <span style="font-size:0.85rem; color:#94A3B8; font-weight:normal;">estimasi follower pasif</span>
+                </div>
+                <div style="font-size:0.82rem; color:#CBD5E1; line-height:1.45;">
+                    {_escape_html(main_health['summary'])}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with h_col3:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">Rasio Komentar vs Likes (Human Vitality)</div>
+                <div class="metric-value" style="font-size:1.6rem;">{main_health['comment_ratio_pct']}%</div>
+                <div style="font-size:0.8rem; color:#94A3B8; margin-top:6px; line-height:1.4;">
+                    {("🟢 Sangat sehat! Pengguna berdiskusi aktif." if main_health['comment_ratio_pct'] >= 1.5 else "⚠️ Komentar rendah dibanding likes (indikasi like pasif/feed scrolling).")}
+                </div>
+                <div style="font-size:0.75rem; color:#818CF8; margin-top:6px;">
+                    Benchmark Sehat Tier Ini: <b>{main_health['expected_er_pct']:.1f}% ER</b>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Action items expander
+    with st.expander("📋 Rekomendasi Tindakan untuk Menaikkan Kesehatan Audiens", expanded=False):
+        for item in main_health.get("action_items", []):
+            st.markdown(f"- {_escape_html(item)}")
+
+    st.markdown("---")
+
+    # 2. Commercial Sponsorship Rate Card
+    st.markdown("### 2. 💰 Commercial Sponsorship & Endorsement Estimator")
+    st.caption("Estimasi tarif wajar per postingan sponsorship berdasarkan skala follower dan multiplier performa interaksi (ER).")
+
+    r_c1, r_c2, r_c3 = st.columns(3)
+    with r_c1:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">🖼️ Single Feed Post</div>
+                <div style="font-size:1.35rem; font-weight:800; color:#F8FAFC; margin:4px 0;">
+                    {format_idr(main_rate['feed_min'])} – {format_idr(main_rate['feed_max'])}
+                </div>
+                <div style="font-size:0.78rem; color:#94A3B8;">Foto tunggal / Carousel informatif permanen</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with r_c2:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">📹 Video Reels / TikTok</div>
+                <div style="font-size:1.35rem; font-weight:800; color:#34D399; margin:4px 0;">
+                    {format_idr(main_rate['reels_min'])} – {format_idr(main_rate['reels_max'])}
+                </div>
+                <div style="font-size:0.78rem; color:#94A3B8;">Video pendek dengan jangkauan algoritma luas</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with r_c3:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">⏱️ Instagram / TikTok Story</div>
+                <div style="font-size:1.35rem; font-weight:800; color:#818CF8; margin:4px 0;">
+                    {format_idr(main_rate['story_min'])} – {format_idr(main_rate['story_max'])}
+                </div>
+                <div style="font-size:0.78rem; color:#94A3B8;">Story 24 Jam dengan link swipe-up / stiker produk</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f"""
+        <div style="background:rgba(30,41,59,0.6); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:12px 18px; margin:14px 0 20px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+            <div>
+                <span style="font-size:0.8rem; text-transform:uppercase; color:#94A3B8; font-weight:700;">Status Komersial Akun:</span>
+                <span style="font-weight:700; color:#FFFFFF; margin-left:8px;">{main_rate['commercial_rating']}</span>
+            </div>
+            <div style="font-size:0.82rem; color:#A5B4FC;">
+                Tier: <b>{main_rate['tier_name']}</b> (Multiplier: <b>{main_rate['er_multiplier']}x</b>)
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Comparative Rate Card Table for all competitors
+    st.markdown("**Perbandingan Estimasi Rate Card (Akun Anda vs Kompetitor):**")
+    rate_table_rows = []
+    for _, acc_row in comparison_df.iterrows():
+        row_dict = acc_row.to_dict()
+        acc_rate = calculate_rate_card_and_commercial_value(row_dict, platform=selected_platform)
+        acc_health = audit_audience_health(row_dict)
+        rate_table_rows.append({
+            "Profil": f"@{acc_row['Profile']}" + (" (You)" if acc_row.get("Is Main") else ""),
+            "Tier": acc_rate["tier_name"].split(" ")[0],
+            "Health Grade": acc_health["grade"],
+            "Ghost Risk": f"{acc_health['ghost_risk_pct']}%",
+            "Feed Post (Est.)": f"{format_idr(acc_rate['feed_min'])} - {format_idr(acc_rate['feed_max'])}",
+            "Reels/Video (Est.)": f"{format_idr(acc_rate['reels_min'])} - {format_idr(acc_rate['reels_max'])}",
+            "Story (Est.)": f"{format_idr(acc_rate['story_min'])} - {format_idr(acc_rate['story_max'])}",
+            "Rating": acc_rate["commercial_rating"].split(" ")[0] + " " + acc_rate["commercial_rating"].split(" ")[1],
+        })
+
+    rate_table_df = pd.DataFrame(rate_table_rows)
+    st.dataframe(rate_table_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # 3. One-Click Executive Client Audit Deck Export
+    st.markdown("### 3. 📄 One-Click Executive Client Audit Deck (HTML / Print PDF)")
+    st.caption("Butuh laporan komprehensif resmi untuk dipresentasikan kepada klien, manajemen, atau calon sponsor brand?")
+
+    exec_html = generate_executive_audit_html(
+        comparison_df=comparison_df,
+        accounts_data=accounts_data,
+        days_count=days_count,
+        platform=selected_platform,
+        main_handle=main_handle,
+    )
+
+    col_exp_deck, col_exp_tip = st.columns([1.5, 3])
+    with col_exp_deck:
+        st.download_button(
+            label="📄 Download Executive Audit Deck (HTML)",
+            data=exec_html.encode("utf-8"),
+            file_name=f"socialiq_audit_{selected_platform.lower()}_{main_handle}.html",
+            mime="text/html",
+            type="primary",
+            use_container_width=True,
+            help="Unduh laporan eksekutif lengkap dalam format HTML.",
+        )
+    with col_exp_tip:
+        st.markdown(
+            """
+            <div style="font-size:0.84rem; color:#94A3B8; background:rgba(30,41,59,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:10px 14px;">
+                💡 <b>Cara Simpan ke PDF:</b> Buka file HTML hasil download di browser Google Chrome/Edge/Safari, lalu tekan tombol <b>🖨️ Cetak / Simpan ke PDF</b> di pojok kanan atas layar (atau tekan <code>Ctrl+P</code> / <code>Cmd+P</code>) dan pilih <i>Save as PDF</i>.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 # Footer
 st.markdown("---")

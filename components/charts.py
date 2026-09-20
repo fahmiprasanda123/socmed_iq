@@ -539,3 +539,132 @@ def create_wordcloud_figure(
     plt.tight_layout(pad=0)
     return fig
 
+
+def generate_battle_card_image(
+    main_kpi: Dict[str, Any],
+    comp_kpi: Dict[str, Any],
+    platform: str = "Instagram",
+) -> bytes:
+    """
+    Generate a high-res, shareable head-to-head Battle Card infographic PNG.
+    Returns PNG bytes ready for st.image display and direct file download.
+    """
+    import io
+    from matplotlib.figure import Figure
+    from matplotlib.patches import FancyBboxPatch, Circle
+
+    # 1. Parse metrics
+    main_handle = str(main_kpi.get("Profile") or main_kpi.get("handle") or "Akun Anda")
+    comp_handle = str(comp_kpi.get("Profile") or comp_kpi.get("handle") or "Kompetitor")
+
+    main_f = int(main_kpi.get("Followers", 0))
+    comp_f = int(comp_kpi.get("Followers", 0))
+
+    main_er = float(main_kpi.get("ER (%)") or main_kpi.get("avg_er", 0.0))
+    comp_er = float(comp_kpi.get("ER (%)") or comp_kpi.get("avg_er", 0.0))
+
+    main_ppi = float(main_kpi.get("PPI") or main_kpi.get("ppi", 0.0))
+    comp_ppi = float(comp_kpi.get("PPI") or comp_kpi.get("ppi", 0.0))
+
+    main_posts = float(main_kpi.get("Posts/Day") or main_kpi.get("posts_per_day", 0.0))
+    comp_posts = float(comp_kpi.get("Posts/Day") or comp_kpi.get("posts_per_day", 0.0))
+
+    # 2. Determine Winners for Badges
+    er_winner = main_handle if main_er >= comp_er else comp_handle
+    ppi_winner = main_handle if main_ppi >= comp_ppi else comp_handle
+    f_winner = main_handle if main_f >= comp_f else comp_handle
+
+    # Create figure (1000 x 600 px at 100 dpi)
+    fig = Figure(figsize=(10, 6), facecolor="#0B1120")
+    ax = fig.add_subplot(111)
+    ax.set_facecolor("#0B1120")
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 6)
+    ax.axis("off")
+
+    # Outer border
+    border = FancyBboxPatch(
+        (0.2, 0.2), 9.6, 5.6,
+        boxstyle="round,pad=0.1,rounding_size=0.3",
+        ec="#6366F1", fc="#0F172A", lw=2, alpha=0.9
+    )
+    ax.add_patch(border)
+
+    # Header title
+    ax.text(5.0, 5.4, "SOCIALIQ BATTLE CARD", color="#FFFFFF", fontsize=18, fontweight="bold", ha="center", va="center")
+    ax.text(5.0, 5.05, f"— {platform.upper()} HEAD-TO-HEAD INTELLIGENCE —", color="#818CF8", fontsize=10, fontweight="bold", ha="center", va="center")
+
+    # Left Account Card (Main Account)
+    main_box = FancyBboxPatch(
+        (0.6, 1.4), 3.9, 3.3,
+        boxstyle="round,pad=0.08,rounding_size=0.2",
+        ec="#10B981" if main_ppi >= comp_ppi else "#4F46E5",
+        fc="#1E293B", lw=2, alpha=0.85
+    )
+    ax.add_patch(main_box)
+
+    # Left account content
+    ax.text(2.55, 4.35, f"@{main_handle}", color="#34D399" if main_ppi >= comp_ppi else "#A5B4FC", fontsize=15, fontweight="bold", ha="center", va="center")
+    ax.text(2.55, 4.05, "AKUN UTAMA", color="#94A3B8", fontsize=8, fontweight="bold", ha="center", va="center")
+
+    ax.text(2.55, 3.55, format_number(main_f), color="#FFFFFF", fontsize=18, fontweight="bold", ha="center", va="center")
+    ax.text(2.55, 3.25, "TOTAL FOLLOWERS", color="#94A3B8", fontsize=8, ha="center", va="center")
+
+    ax.text(1.6, 2.65, f"{main_er:.2f}%", color="#10B981" if main_er >= comp_er else "#FFFFFF", fontsize=14, fontweight="bold", ha="center", va="center")
+    ax.text(1.6, 2.35, "ENGAGEMENT", color="#94A3B8", fontsize=7.5, ha="center", va="center")
+
+    ax.text(3.5, 2.65, f"{main_ppi:.1f}", color="#F59E0B" if main_ppi >= comp_ppi else "#FFFFFF", fontsize=14, fontweight="bold", ha="center", va="center")
+    ax.text(3.5, 2.35, "PPI SCORE", color="#94A3B8", fontsize=7.5, ha="center", va="center")
+
+    ax.text(2.55, 1.85, f"{main_posts:.2f} post / hari", color="#CBD5E1", fontsize=9.5, ha="center", va="center")
+
+    # Center "VS" Badge
+    vs_circle = Circle((5.0, 3.05), 0.55, fc="#6366F1", ec="#A5B4FC", lw=2)
+    ax.add_patch(vs_circle)
+    ax.text(5.0, 3.05, "VS", color="#FFFFFF", fontsize=13, fontweight="bold", ha="center", va="center")
+
+    # Right Account Card (Competitor)
+    comp_box = FancyBboxPatch(
+        (5.5, 1.4), 3.9, 3.3,
+        boxstyle="round,pad=0.08,rounding_size=0.2",
+        ec="#10B981" if comp_ppi > main_ppi else "#64748B",
+        fc="#1E293B", lw=2, alpha=0.85
+    )
+    ax.add_patch(comp_box)
+
+    # Right account content
+    ax.text(7.45, 4.35, f"@{comp_handle}", color="#38BDF8" if comp_ppi > main_ppi else "#E2E8F0", fontsize=15, fontweight="bold", ha="center", va="center")
+    ax.text(7.45, 4.05, "KOMPETITOR", color="#94A3B8", fontsize=8, fontweight="bold", ha="center", va="center")
+
+    ax.text(7.45, 3.55, format_number(comp_f), color="#FFFFFF", fontsize=18, fontweight="bold", ha="center", va="center")
+    ax.text(7.45, 3.25, "TOTAL FOLLOWERS", color="#94A3B8", fontsize=8, ha="center", va="center")
+
+    ax.text(6.5, 2.65, f"{comp_er:.2f}%", color="#10B981" if comp_er > main_er else "#FFFFFF", fontsize=14, fontweight="bold", ha="center", va="center")
+    ax.text(6.5, 2.35, "ENGAGEMENT", color="#94A3B8", fontsize=7.5, ha="center", va="center")
+
+    ax.text(8.4, 2.65, f"{comp_ppi:.1f}", color="#F59E0B" if comp_ppi > main_ppi else "#FFFFFF", fontsize=14, fontweight="bold", ha="center", va="center")
+    ax.text(8.4, 2.35, "PPI SCORE", color="#94A3B8", fontsize=7.5, ha="center", va="center")
+
+    ax.text(7.45, 1.85, f"{comp_posts:.2f} post / hari", color="#CBD5E1", fontsize=9.5, ha="center", va="center")
+
+    # Bottom Verdict Banner
+    verdict_box = FancyBboxPatch(
+        (0.6, 0.5), 8.8, 0.65,
+        boxstyle="round,pad=0.04,rounding_size=0.15",
+        ec="#334155", fc="#111827", lw=1
+    )
+    ax.add_patch(verdict_box)
+
+    ax.text(1.8, 0.82, f"★ ER Winner: @{er_winner}", color="#34D399", fontsize=9, fontweight="bold", ha="left", va="center")
+    ax.text(5.0, 0.82, f"★ PPI Winner: @{ppi_winner}", color="#FBBF24", fontsize=9, fontweight="bold", ha="center", va="center")
+    ax.text(8.8, 0.82, f"Scale: @{f_winner}", color="#38BDF8", fontsize=9, fontweight="bold", ha="right", va="center")
+
+    # Watermark Footer
+    ax.text(5.0, 0.32, "SocialIQ Intelligence • threads.net/@itsamilitarysecret", color="#64748B", fontsize=8, ha="center", va="center")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor(), edgecolor="none")
+    buf.seek(0)
+    return buf.getvalue()
+
+

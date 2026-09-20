@@ -102,3 +102,28 @@ def to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Benchmark") -> bytes:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
     output.seek(0)
     return output.getvalue()
+
+
+def format_idr(amount: float | int | None) -> str:
+    """
+    Format numeric value into Indonesian Rupiah shorthand or full format.
+    Examples:
+        1500000 -> 'Rp 1,50 Jt'
+        25000000 -> 'Rp 25,0 Jt'
+        450000 -> 'Rp 450 Rb'
+    """
+    if amount is None or pd.isna(amount) or amount == 0:
+        return "Rp 0"
+    
+    val = float(amount)
+    abs_val = abs(val)
+    sign = "-" if val < 0 else ""
+
+    if abs_val >= 1_000_000_000:
+        return f"{sign}Rp {abs_val / 1_000_000_000:.2f} Miliar"
+    if abs_val >= 1_000_000:
+        return f"{sign}Rp {abs_val / 1_000_000:.2f} Jt"
+    if abs_val >= 1_000:
+        return f"{sign}Rp {abs_val / 1_000:.0f} Rb"
+    return f"{sign}Rp {int(abs_val):,}".replace(",", ".")
+

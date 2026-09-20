@@ -7,6 +7,7 @@ from components.charts import (
     create_quadrant_scatter,
     create_timing_heatmap,
     create_wordcloud_figure,
+    generate_battle_card_image,
 )
 
 __all__ = [
@@ -16,4 +17,6 @@ __all__ = [
     "create_quadrant_scatter",
     "create_timing_heatmap",
     "create_wordcloud_figure",
+    "generate_battle_card_image",
 ]
+
